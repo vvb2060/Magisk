@@ -45,21 +45,21 @@ direct_install() {
 }
 
 restore_imgs() {
-  [ -z $SHA1 ] && return 1
-  local BACKUPDIR=/data/magisk_backup_$SHA1
-  [ -d $BACKUPDIR ] || return 1
+  [ -z "$SHA1" ] && return 1
+  local BACKUPDIR="/data/magisk_backup_$SHA1"
+  [ -d "$BACKUPDIR" ] || return 1
 
   get_flags
   find_boot_image
 
   for name in dtb dtbo; do
-    [ -f $BACKUPDIR/${name}.img.gz ] || continue
-    local IMAGE=$(find_block $name$SLOT)
-    [ -z $IMAGE ] && continue
-    flash_image $BACKUPDIR/${name}.img.gz $IMAGE
+    [ -f "$BACKUPDIR/${name}.img.gz" ] || continue
+    local IMAGE=$(find_block "$name$SLOT")
+    [ -z "$IMAGE" ] && continue
+    flash_image "$BACKUPDIR/${name}.img.gz" "$IMAGE"
   done
-  [ -f $BACKUPDIR/boot.img.gz ] || return 1
-  flash_image $BACKUPDIR/boot.img.gz $BOOTIMAGE
+  [ -f "$BACKUPDIR/boot.img.gz" ] || return 1
+  flash_image "$BACKUPDIR/boot.img.gz" "$BOOTIMAGE" && rm -rf "$BACKUPDIR"
 }
 
 post_ota() {
