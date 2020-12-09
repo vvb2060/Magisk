@@ -243,14 +243,14 @@ abstract class MagiskInstallImpl : KoinComponent {
                 src.reset()
                 val filename = "magisk_patched_" + System.nanoTime() % 1000000L
                 outStream = if (magic.contentEquals("ustar".toByteArray())) {
-                    outFile = MediaStoreUtils.getFile("$filename.tar")
+                    outFile = MediaStoreUtils.getFile("$filename.tar", true)
                     handleTar(src, outFile!!.uri.outputStream())
                 } else {
                     // Raw image
                     srcBoot = File(installDir, "boot.img").path
                     console.add("- Copying image to cache")
                     FileOutputStream(srcBoot).use { src.copyTo(it) }
-                    outFile = MediaStoreUtils.getFile("$filename.img")
+                    outFile = MediaStoreUtils.getFile("$filename.img", true)
                     outFile!!.uri.outputStream()
                 }
             }
