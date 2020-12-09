@@ -31,9 +31,9 @@ grep_cmdline() {
 grep_prop() {
   local REGEX="s/^$1=//p"
   shift
-  local FILES=$@
+  local FILES=$*
   [ -z "$FILES" ] && FILES='/system/build.prop'
-  sed -n "$REGEX" $FILES 2>/dev/null | head -n 1
+  sed -n "$REGEX" $FILES 2>/dev/null | head -n 1 | tr -d '\r'
 }
 
 getvar() {
