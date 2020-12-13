@@ -4,18 +4,25 @@ import os
 import subprocess
 
 is_windows = os.name == 'nt'
-if is_windows:
+is_ci = 'CI' in os.environ and os.environ['CI'] == 'true'
+if is_windows and not is_ci:
     import colorama
     colorama.init()
 
 
 def error(str):
-    print('\n' + '\033[41m' + str + '\033[0m' + '\n')
+    if is_ci:
+        print('\n' + '! ' + str + '\n')
+    else:
+        print('\n' + '\033[41m' + str + '\033[0m' + '\n')
     sys.exit(1)
 
 
 def header(str):
-    print('\n' + '\033[44m' + str + '\033[0m' + '\n')
+    if is_ci:
+        print('\n' + str + '\n')
+    else:
+        print('\n' + '\033[44m' + str + '\033[0m' + '\n')
 
 
 def vprint(str):
@@ -157,7 +164,7 @@ def load_config(args):
     except ValueError:
         error('Config error: "versionCode" is required to be an integer')
 
-    if args.release and not op.exists(config['keyStore']):
+    if args.release and not is_ci and not op.exists(config['keyStore']):
         error(f'Config error: assign "keyStore" to a java keystore')
 
     mkdir_p(config['outdir'])
@@ -195,7 +202,7 @@ def clean_elf():
 
 
 def sign_zip(unsigned, output, release):
-    if not release:
+    if not release or is_ci:
         mv(unsigned, output)
         return
 
