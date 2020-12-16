@@ -2,16 +2,9 @@ name: Magisk Build
 
 on:
   push:
-    branches: [ master ]
-    paths:
-      - 'app/**'
-      - 'native/**'
-      - 'stub/**'
-      - 'buildSrc/**'
-      - 'build.py'
-      - 'gradle.properties'
+    branches: [ alpha ]
   pull_request:
-    branches: [ master ]
+    branches: [ alpha ]
   workflow_dispatch:
 
 jobs:
