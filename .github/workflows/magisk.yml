@@ -29,7 +29,7 @@ jobs:
         run: echo ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT >> $GITHUB_ENV
         shell: bash
 
-      - name: Creat config.prop
+      - name: Create config.prop
         run: |
           echo version=ci > config.prop
           echo versionCode=1 >> config.prop
