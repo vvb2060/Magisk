@@ -60,10 +60,7 @@ class SettingsViewModel(
         if (Info.env.isActive) {
             list.add(ClearRepoCache)
             if (Const.USER_ID == 0) {
-                if (hidden)
-                    list.add(Restore)
-                else if (Info.isConnected.get())
-                    list.add(Hide)
+                if (hidden) list.add(Restore) else list.add(Hide)
             }
         }
 
