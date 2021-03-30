@@ -125,7 +125,7 @@ static void handle_request(int client) {
     // Simple requests
     switch (req_code) {
     case CHECK_VERSION:
-        write_string(client, MAGISK_VERSION ":MAGISK");
+        write_string(client, std::string(MAGISK_VERSION) + ":MAGISK");
         goto shortcut;
     case CHECK_VERSION_CODE:
         write_int(client, MAGISK_VER_CODE);
@@ -190,7 +190,7 @@ static void start_log_daemon();
 
     start_log_daemon();
 
-    LOGI(NAME_WITH_VER(Magisk) " daemon started\n");
+    LOGI("Magisk %s daemon started\n", MAGISK_FULL_VER);
 
     // Escape from cgroup
     int pid = getpid();
