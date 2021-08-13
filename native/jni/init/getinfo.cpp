@@ -221,7 +221,7 @@ void load_kernel_info(cmdline *cmd) {
             cmd->force_normal_boot = value[0] == '1';
         } else if (key == "androidboot.android_dt_dir") {
             strcpy(cmd->dt_dir, value.data());
-        } else if (key == "hardware") {
+        } else if (key == "androidboot.hardware") {
             strcpy(cmd->hardware, value.data());
         } else if (key == "androidboot.hardware.platform") {
             strcpy(cmd->hardware_plat, value.data());
