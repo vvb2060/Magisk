@@ -15,7 +15,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest, macOS-latest ]
-
+    env:
+      GRADLE_OPTS: -Xmx2048m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
     steps:
       - name: Check out
         uses: actions/checkout@v2
