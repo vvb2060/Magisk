@@ -14,12 +14,12 @@ using namespace std;
 static vector<string> rc_list;
 
 static void patch_init_rc(const char *src, const char *dest, const char *tmp_dir) {
-    FILE *rc = xfopen(dest, "we");
+    auto rc = xopen_file(dest, "we");
     if (!rc) {
         PLOGE("%s: open %s failed", __PRETTY_FUNCTION__, src);
         return;
     }
-    file_readline(src, [=](string_view line) -> bool {
+    file_readline(src, [&rc](string_view line) -> bool {
         // Do not start vaultkeeper
         if (str_contains(line, "start vaultkeeper")) {
             LOGD("Remove vaultkeeper\n");
@@ -28,21 +28,21 @@ static void patch_init_rc(const char *src, const char *dest, const char *tmp_dir
         // Do not run flash_recovery
         if (str_starts(line, "service flash_recovery")) {
             LOGD("Remove flash_recovery\n");
-            fprintf(rc, "service flash_recovery /system/bin/xxxxx\n");
+            fprintf(rc.get(), "service flash_recovery /system/bin/xxxxx\n");
             return true;
         }
         // Else just write the line
-        fprintf(rc, "%s", line.data());
+        fprintf(rc.get(), "%s", line.data());
         return true;
     });
 
-    fprintf(rc, "\n");
+    fprintf(rc.get(), "\n");
 
     // Inject custom rc scripts
     for (auto &script : rc_list) {
         // Replace template arguments of rc scripts with dynamic paths
         replace_all(script, "${MAGISKTMP}", tmp_dir);
-        fprintf(rc, "\n%s\n", script.data());
+        fprintf(rc.get(), "\n%s\n", script.data());
     }
     rc_list.clear();
 
@@ -52,9 +52,8 @@ static void patch_init_rc(const char *src, const char *dest, const char *tmp_dir
     gen_rand_str(ls_svc, sizeof(ls_svc));
     gen_rand_str(bc_svc, sizeof(bc_svc));
     LOGD("Inject magisk services: [%s] [%s] [%s]\n", pfd_svc, ls_svc, bc_svc);
-    fprintf(rc, MAGISK_RC, tmp_dir, pfd_svc, ls_svc, bc_svc);
+    fprintf(rc.get(), MAGISK_RC, tmp_dir, pfd_svc, ls_svc, bc_svc);
 
-    fclose(rc);
     clone_attr(src, dest);
 }
 

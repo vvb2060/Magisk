@@ -93,11 +93,12 @@ void dyn_img_hdr::print() {
 }
 
 void dyn_img_hdr::dump_hdr_file() {
-    FILE *fp = xfopen(HEADER_FILE, "w");
-    fprintf(fp, "pagesize=%u\n", page_size());
+    auto fp = xopen_file(HEADER_FILE, "w");
+    if (!fp) return;
+    fprintf(fp.get(), "pagesize=%u\n", page_size());
     if (name())
-        fprintf(fp, "name=%s\n", name());
-    fprintf(fp, "cmdline=%.*s%.*s\n", BOOT_ARGS_SIZE, cmdline(), BOOT_EXTRA_ARGS_SIZE, extra_cmdline());
+        fprintf(fp.get(), "name=%s\n", name());
+    fprintf(fp.get(), "cmdline=%.*s%.*s\n", BOOT_ARGS_SIZE, cmdline(), BOOT_EXTRA_ARGS_SIZE, extra_cmdline());
     uint32_t ver = os_version();
     if (ver) {
         int a, b, c, y, m;
@@ -108,13 +109,12 @@ void dyn_img_hdr::dump_hdr_file() {
         a = (version >> 14) & 0x7f;
         b = (version >> 7) & 0x7f;
         c = version & 0x7f;
-        fprintf(fp, "os_version=%d.%d.%d\n", a, b, c);
+        fprintf(fp.get(), "os_version=%d.%d.%d\n", a, b, c);
 
         y = (patch_level >> 4) + 2000;
         m = patch_level & 0xf;
-        fprintf(fp, "os_patch_level=%d-%02d\n", y, m);
+        fprintf(fp.get(), "os_patch_level=%d-%02d\n", y, m);
     }
-    fclose(fp);
 }
 
 void dyn_img_hdr::load_hdr_file() {

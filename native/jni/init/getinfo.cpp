@@ -152,9 +152,8 @@ void setup_klog() {
     strcpy(kmsg_buf, "magiskinit: ");
 
     // Disable kmsg rate limiting
-    if (FILE *rate = fopen("/proc/sys/kernel/printk_devkmsg", "w")) {
-        fprintf(rate, "on\n");
-        fclose(rate);
+    if (auto rate = xopen_file("/proc/sys/kernel/printk_devkmsg", "w")) {
+        fprintf(rate.get(), "on\n");
     }
 }
 

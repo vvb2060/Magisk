@@ -559,12 +559,16 @@ void decompress(char *infile, const char *outfile) {
     bool in_std = infile == "-"sv;
     bool rm_in = false;
 
-    FILE *in_fp = in_std ? stdin : xfopen(infile, "re");
+    auto in_fp = make_file(in_std ? stdin : xfopen(infile, "re"));
+    if (!in_fp) {
+        LOGE("Failed to open file");
+        return;
+    }
     stream_ptr strm;
 
     char buf[4096];
     size_t len;
-    while ((len = fread(buf, 1, sizeof(buf), in_fp))) {
+    while ((len = fread(buf, 1, sizeof(buf), in_fp.get()))) {
         if (!strm) {
             format_t type = check_fmt(buf, len);
 
@@ -601,7 +605,6 @@ void decompress(char *infile, const char *outfile) {
     }
 
     strm.reset(nullptr);
-    fclose(in_fp);
 
     if (rm_in)
         unlink(infile);
@@ -615,7 +618,13 @@ void compress(const char *method, const char *infile, const char *outfile) {
     bool in_std = infile == "-"sv;
     bool rm_in = false;
 
-    FILE *in_fp = in_std ? stdin : xfopen(infile, "re");
+    auto in_fp = make_file(in_std ? stdin : xfopen(infile, "re"));
+
+    if (!in_fp) {
+        LOGE("Failed to open file");
+        return;
+    }
+
     FILE *out_fp;
 
     if (outfile == nullptr) {
@@ -638,13 +647,12 @@ void compress(const char *method, const char *infile, const char *outfile) {
 
     char buf[4096];
     size_t len;
-    while ((len = fread(buf, 1, sizeof(buf), in_fp))) {
+    while ((len = fread(buf, 1, sizeof(buf), in_fp.get()))) {
         if (strm->write(buf, len) < 0)
             LOGE("Compression error!\n");
     };
 
     strm.reset(nullptr);
-    fclose(in_fp);
 
     if (rm_in)
         unlink(infile);

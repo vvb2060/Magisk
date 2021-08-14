@@ -107,7 +107,6 @@ sepolicy *sepolicy::compile_split() {
     char path[128], plat_ver[10];
     cil_db_t *db = nullptr;
     sepol_policydb_t *pdb = nullptr;
-    FILE *f;
     int policy_ver;
     const char *cil_file;
 
@@ -119,15 +118,16 @@ sepolicy *sepolicy::compile_split() {
     cil_set_target_platform(db, SEPOL_TARGET_SELINUX);
     cil_set_attrs_expand_generated(db, 0);
 
-    f = xfopen(SELINUX_VERSION, "re");
-    fscanf(f, "%d", &policy_ver);
-    fclose(f);
-    cil_set_policy_version(db, policy_ver);
+
+    if (auto f = xopen_file(SELINUX_VERSION, "re")) {
+        fscanf(f.get(), "%d", &policy_ver);
+        cil_set_policy_version(db, policy_ver);
+    }
 
     // Get mapping version
-    f = xfopen(VEND_POLICY_DIR "plat_sepolicy_vers.txt", "re");
-    fscanf(f, "%s", plat_ver);
-    fclose(f);
+    if (auto f = xopen_file(VEND_POLICY_DIR "plat_sepolicy_vers.txt", "re")) {
+        fscanf(f.get(), "%s", plat_ver);
+    }
 
     // plat
     load_cil(db, SPLIT_PLAT_CIL);

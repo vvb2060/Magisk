@@ -338,14 +338,13 @@ void write_zero(int fd, size_t size) {
 }
 
 void file_readline(bool trim, const char *file, const function<bool(string_view)> &fn) {
-    FILE *fp = xfopen(file, "re");
-    if (fp == nullptr)
-        return;
-    size_t len = 1024;
-    char *buf = (char *) malloc(len);
+    auto fp = xopen_file(file, "re");
+    if (!fp) return;
+    size_t len = 0;
+    char *buf = nullptr;
     char *start;
     ssize_t read;
-    while ((read = getline(&buf, &len, fp)) >= 0) {
+    while ((read = getline(&buf, &len, fp.get())) >= 0) {
         start = buf;
         if (trim) {
             while (read && "\n\r "sv.find(buf[read - 1]) != string::npos)
@@ -357,7 +356,6 @@ void file_readline(bool trim, const char *file, const function<bool(string_view)
         if (!fn(start))
             break;
     }
-    fclose(fp);
     free(buf);
 }
 
