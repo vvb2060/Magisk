@@ -6,7 +6,6 @@
 #include <magisk.hpp>
 #include <selinux.hpp>
 #include <resetprop.hpp>
-
 #include "core.hpp"
 
 using namespace std;
@@ -56,8 +55,8 @@ public:
     bool is_lnk() { return file_type() == DT_LNK; }
     bool is_reg() { return file_type() == DT_REG; }
 
-    uint8_t type() { return node_type; }
-    const string &name() { return _name; }
+    [[nodiscard]] uint8_t type() const { return node_type; }
+    [[nodiscard]] const string &name() const { return _name; }
 
     // Paths
     const string &node_path();
@@ -81,25 +80,25 @@ protected:
     void create_and_mount(const string &src);
 
     /* Use top bit of _file_type for node exist status */
-    bool exist() { return static_cast<bool>(_file_type & (1 << 7)); }
+    [[nodiscard]] bool exist() const { return static_cast<bool>(_file_type & (1 << 7)); }
     void set_exist(bool b) { if (b) _file_type |= (1 << 7); else _file_type &= ~(1 << 7); }
-    uint8_t file_type() { return static_cast<uint8_t>(_file_type & ~(1 << 7)); }
+    [[nodiscard]] uint8_t file_type() const { return static_cast<uint8_t>(_file_type & ~(1 << 7)); }
 
 private:
     friend void merge_node(node_entry *a, node_entry *b);
     friend class dir_node;
 
-    bool need_skel_upgrade(node_entry *child);
+    static bool need_skel_upgrade(node_entry *child);
 
     // Node properties
-    string _name;
-    uint8_t _file_type;
-    uint8_t node_type;
+    string _name{};
+    uint8_t _file_type{0};
+    uint8_t node_type{0};
 
-    dir_node *_parent = nullptr;
+    dir_node *_parent{nullptr};
 
     // Cache
-    string _node_path;
+    string _node_path{};
 };
 
 class dir_node : public node_entry {
@@ -148,10 +147,8 @@ public:
 
     // Return false if rejected
     bool insert(node_entry *node) {
-        return node
-        ? iter_to_node(insert(children.find(node->_name), node->node_type,
-                [=](auto _) { return node; })) != nullptr
-        : false;
+        return node && iter_to_node(insert(children.find(node->_name), node->node_type,
+                                           [=](auto _) { return node; })) != nullptr;
     }
 
     // Return inserted node or null if rejected
@@ -231,14 +228,14 @@ class root_node : public dir_node {
 public:
     explicit root_node(const char *name) : dir_node(name, this), prefix("") {}
     explicit root_node(node_entry *node) : dir_node(node, this), prefix("/system") {}
-    const char * const prefix;
+    const char * const prefix{nullptr};
 };
 
 class inter_node : public dir_node {
 public:
     inter_node(const char *name, const char *module) : dir_node(name, this), module(module) {}
 private:
-    const char *module;
+    const char *module{nullptr};
     friend class module_node;
 };
 
@@ -381,7 +378,7 @@ bool node_entry::need_skel_upgrade(node_entry *child) {
      * - Target does not exist
      * - Source or target is a symlink */
     bool upgrade = false;
-    struct stat st;
+    struct stat st{};
     if (lstat(child->node_path().data(), &st) != 0) {
         upgrade = true;
     } else {
@@ -480,7 +477,7 @@ void skel_node::mount() {
         return;
     string src = mirror_path();
     const string &dest = node_path();
-    file_attr a;
+    file_attr a{};
     getattr(src.data(), &a);
     mkdir(dest.data(), 0);
     if (!isa<skel_node>(parent())) {
@@ -546,6 +543,9 @@ void magic_mount() {
     root->insert(system);
 
     char buf[4096];
+
+    sFILE tmp_rule = make_file(nullptr);
+
     LOGI("* Loading modules\n");
     for (const auto &m : module_list) {
         auto module = m.data();
@@ -556,6 +556,27 @@ void magic_mount() {
         if (access(buf, F_OK) == 0) {
             LOGI("%s: loading [system.prop]\n", module);
             load_prop_file(buf, false);
+        }
+
+        // Load sepolicy.rule
+        strcpy(b, "sepolicy.rule");
+        if (access(buf, F_OK) == 0) {
+            char mirror_path[PATH_MAX];
+            sprintf(mirror_path, "%s/%s/sepolicy.rule", RULESDIR, module);
+            if (access(mirror_path, F_OK) != 0) {
+                LOGI("%s: applying [sepolicy.rule]\n", module);
+                // copy rule file since user may have cleaned /cache.
+                cp_afc(b, mirror_path);
+                // magiskinit cannot load sepolicy properly, try to live path it
+                if (tmp_rule == nullptr) {
+                    tmp_rule = make_file(tmpfile());
+                }
+                if (tmp_rule) {
+                    auto content = full_read(buf);
+                    fwrite(content.data(), 1, content.size(), tmp_rule.get());
+                    fwrite("\n", 1, 1, tmp_rule.get()); // in case no tailing new line
+                }
+            }
         }
 
         // Check whether skip mounting
@@ -575,6 +596,13 @@ void magic_mount() {
         close(fd);
     }
 
+    if (tmp_rule) {
+        LOGI("* Applying sepolicy");
+        char tmp_path[PATH_MAX];
+        snprintf(tmp_path, PATH_MAX, "/proc/%d/fd/%d", getpid(), fileno(tmp_rule.get()));
+        exec_command_sync("magiskpolicy", "--live", "--apply", tmp_path);
+    }
+
     if (MAGISKTMP != "/sbin") {
         // Need to inject our binaries into /system/bin
         inject_magisk_bins(system);
@@ -585,7 +613,7 @@ void magic_mount() {
 
     // Handle special read-only partitions
     for (const char *part : { "/vendor", "/product", "/system_ext" }) {
-        struct stat st;
+        struct stat st{};
         if (lstat(part, &st) == 0 && S_ISDIR(st.st_mode)) {
             if (auto old = system->extract(part + 1); old) {
                 auto new_node = new root_node(old);
