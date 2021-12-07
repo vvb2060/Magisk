@@ -8,6 +8,7 @@
 
 #include <sys/mount.h>
 #include <map>
+#include <set>
 
 #include <magisk.hpp>
 #include <utils.hpp>
@@ -132,27 +133,46 @@ exit_loop:
     // Append oppo's custom fstab
     if (access("oplus.fstab", F_OK) == 0) {
         LOGD("Found fstab file: %s\n", "oplus.fstab");
-        vector<fstab_entry> oplus_fstab;
-        map<string, string> bind_map;
+        set<string> main_mount_point;
+        map<string, fstab_entry> bind_map;
+        map<string, fstab_entry> entry_map;
 
-        read_fstab_file("oplus.fstab", oplus_fstab);
+        // used to avoid duplication
+        for (auto &entry: fstab) {
+            main_mount_point.emplace(entry.mnt_point);
+        }
 
-        for (auto &entry : oplus_fstab) {
-            if (entry.mnt_flags.find("bind") != string::npos) {
-                bind_map.emplace(entry.dev, entry.mnt_point);
-                entry.dev = "";
+        {
+            vector<fstab_entry> oplus_fstab;
+            read_fstab_file("oplus.fstab", oplus_fstab);
+
+            for (auto &entry : oplus_fstab) {
+                // skip duplicated entry between the main file and the oplus one
+                if (main_mount_point.count(entry.mnt_point)) continue;
+                if (entry.mnt_flags.find("bind") != string::npos) {
+                    bind_map.emplace(entry.dev, std::move(entry));
+                } else {
+                    // skip duplicated entry in the same file
+                    entry_map.insert_or_assign(entry.mnt_point, std::move(entry));
+                }
             }
         }
 
-        for (auto &entry : oplus_fstab) {
-            // Merge bind entries
+        for (auto &[_, entry] : entry_map) {
             if (entry.dev.empty())
                 continue;
-            auto got = bind_map.find(entry.mnt_point);
-            if (got != bind_map.end())
-                entry.mnt_point = got->second;
 
-            // Mount befor switch root, fix img path
+            // change bind mount entries to dev mount since some user reported bind is not working
+            if (auto got = bind_map.find(entry.mnt_point); got != bind_map.end()) {
+                auto &bind_entry = got->second;
+                bind_entry.dev = entry.dev;
+                bind_entry.mnt_flags = entry.mnt_flags;
+                bind_entry.type = entry.type;
+                bind_entry.fsmgr_flags = entry.fsmgr_flags;
+                fstab.push_back(move(bind_entry));
+            }
+
+            // Mount before switch root, fix img path
             if (str_starts(entry.dev, "loop@/system/"))
                 entry.dev.insert(5, "/system_root");
 
