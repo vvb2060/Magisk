@@ -2,32 +2,11 @@ name: Magisk Build
 
 on:
   push:
-    branches: [ master ]
-    paths:
-      - 'app/**'
-      - 'native/**'
-      - 'stub/**'
-      - 'buildSrc/**'
-      - 'build.py'
-      - 'gradle.properties'
-      - '.github/workflows/build.yml'
-  pull_request:
-    branches: [ master ]
-  workflow_dispatch:
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
-    env:
-      NDK_CCACHE: ccache
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      RUSTC_WRAPPER: sccache
+    name: Test
+    runs-on: macos-latest
 
     steps:
       - name: Check out
@@ -47,62 +26,8 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}
-
-      - name: Set up sccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          variant: sccache
-          key: ${{ runner.os }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}
-
-      - name: Cache Gradle dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            !~/.gradle/caches/build-cache-*
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts') }}
-          restore-keys: ${{ runner.os }}-gradle-
-
-      - name: Cache build cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.gradle/caches/build-cache-*
-          key: ${{ runner.os }}-build-cache-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-build-cache-
-
-      - name: Set up NDK
-        run: python build.py -v ndk
-
-      - name: Build release
+      - name: AVD test
+        if:  runner.os == 'macOS'
         run: |
-          python build.py -vr all
-
-      - name: Build debug
-        run: |
-          python build.py -v all
-
-      - name: Stop gradle daemon
-        run: ./gradlew --stop
-
-      # Only upload artifacts built on Linux
-      - name: Upload build artifact
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ github.sha }}
-          path: out
-
-      - name: Upload mapping and native debug symbols
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v3
-        with:
-          name: ${{ github.sha }}-symbols
-          path: app/build/outputs
+          brew install coreutils
+          scripts/avd_test.sh

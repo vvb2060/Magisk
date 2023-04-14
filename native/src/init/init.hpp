@@ -6,7 +6,7 @@ using kv_pairs = std::vector<std::pair<std::string, std::string>>;
 // For API 28 AVD, it uses legacy SAR setup that requires
 // special hacks in magiskinit to work properly. We do not
 // necessarily want this enabled in production builds.
-#define ENABLE_AVD_HACK 0
+#define ENABLE_AVD_HACK 1
 
 struct BootConfig {
     bool skip_initramfs;

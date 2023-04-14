@@ -57,7 +57,7 @@ done
 ./magiskboot decompress ramdisk.cpio.tmp ramdisk.cpio
 cp ramdisk.cpio ramdisk.cpio.orig
 
-export KEEPVERITY=false
+export KEEPVERITY=true
 export KEEPFORCEENCRYPT=true
 
 echo "KEEPVERITY=$KEEPVERITY" > config
@@ -72,6 +72,7 @@ fi
 [ $API = "28" ] && echo 'RECOVERYMODE=true' >> config
 RANDOMSEED=$(tr -dc 'a-f0-9' < /dev/urandom | head -c 16)
 echo "RANDOMSEED=0x$RANDOMSEED" >> config
+cat config
 
 ./magiskboot compress=xz magisk32 magisk32.xz
 ./magiskboot compress=xz magisk64 magisk64.xz
@@ -91,4 +92,3 @@ echo "RANDOMSEED=0x$RANDOMSEED" >> config
 
 rm -f ramdisk.cpio.orig config magisk*.xz stub.xz
 ./magiskboot compress=gzip ramdisk.cpio ramdisk.cpio.gz
-pm install magisk.apk || true
