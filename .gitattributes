@@ -11,6 +11,7 @@
 *.bat text eol=crlf
 
 # Denote all files that are truly binary and should not be modified.
+native/out/** binary
 tools/** binary
 *.jar binary
 *.exe binary
