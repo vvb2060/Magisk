@@ -163,6 +163,8 @@
     <string name="auto_response">Automatisch beantworten</string>
     <string name="request_timeout">Zeitlimit für Anfrage</string>
     <string name="superuser_notification">Superuser-Benachrichtigung</string>
+    <string name="settings_su_auth_summary">Nachfrage nach Benutzerauthentifizierung bei Superuser-Anfragen</string>
+    <string name="settings_su_auth_title">Benutzerauthentifizierung</string>
     <string name="settings_su_reauth_title">Nach Aktualisierung erneut zertifizieren</string>
     <string name="settings_su_reauth_summary">Superuser-Berechtigungen nach App-Aktualisierung erneut authentifizieren</string>
     <string name="settings_su_tapjack_title">Tapjacking-Schutz aktivieren</string>
