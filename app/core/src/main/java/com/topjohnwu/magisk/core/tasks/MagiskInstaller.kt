@@ -364,7 +364,7 @@ abstract class MagiskInstallImpl protected constructor(
                     // raw image
                     outFile = MediaStoreUtils.getFile("$destName.img")
                     outStream = outFile.uri.outputStream()
-                    val channel = FileInputStream(uri.openFd("r").fileDescriptor).channel
+                    val channel = FileInputStream(uri.openFd().fileDescriptor).channel
                     val boot = installDir.getChildFile("boot.img")
 
                     try {
@@ -432,7 +432,6 @@ abstract class MagiskInstallImpl protected constructor(
         return true
     }
 
-    @RequiresApi(29)
     private fun processUrl(url: String): Boolean {
         // Download image from url
         try {
@@ -454,9 +453,9 @@ abstract class MagiskInstallImpl protected constructor(
         val outFile = MediaStoreUtils.getFile("$destName.img")
         try {
             val newBoot = installDir.getChildFile("new-boot.img")
-            outFile.uri.openFd().use { out ->
+            outFile.uri.outputStream().use { out ->
                 FileInputStream(newBoot).use { input ->
-                    FileUtils.copy(input, FileOutputStream(out.fileDescriptor))
+                    input.copyTo(out)
                 }
             }
             newBoot.delete()
@@ -531,7 +530,6 @@ abstract class MagiskInstallImpl protected constructor(
 
     protected suspend fun patchFile(file: Uri) = extractFiles() && processFile(file)
 
-    @RequiresApi(29)
     protected suspend fun patchFile(url: String) = extractFiles() && processUrl(url)
 
     protected suspend fun direct() = findImage() && extractFiles() && patchBoot() && flashBoot()
@@ -601,7 +599,6 @@ class MagiskInstaller {
         override suspend fun operations() = patchFile(uri)
     }
 
-    @RequiresApi(29)
     class Download(
         private val url: String,
         console: MutableList<String>,
