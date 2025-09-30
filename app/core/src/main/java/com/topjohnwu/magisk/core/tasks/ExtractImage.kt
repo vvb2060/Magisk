@@ -1,7 +1,7 @@
 package com.topjohnwu.magisk.core.tasks
 
 import com.topjohnwu.magisk.core.utils.DataSourceChannel
-import okio.Inflater
+import java.util.zip.Inflater
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipFile
 import org.apache.commons.compress.archivers.zip.ZipMethod

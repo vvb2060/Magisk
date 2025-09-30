@@ -1,10 +1,8 @@
 package com.topjohnwu.magisk.core.tasks
 
 import android.net.Uri
-import android.os.FileUtils
 import android.os.Process
 import android.system.Os
-import androidx.annotation.RequiresApi
 import androidx.annotation.WorkerThread
 import androidx.core.os.postDelayed
 import com.topjohnwu.magisk.StubApk
