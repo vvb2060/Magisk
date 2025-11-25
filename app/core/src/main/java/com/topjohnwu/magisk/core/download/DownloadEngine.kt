@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.job.JobInfo
 import android.app.job.JobScheduler
 import android.content.Context
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -16,7 +15,6 @@ import androidx.collection.isNotEmpty
 import androidx.core.content.getSystemService
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.MutableLiveData
-import com.topjohnwu.magisk.StubApk
 import com.topjohnwu.magisk.core.AppContext
 import com.topjohnwu.magisk.core.Const
 import com.topjohnwu.magisk.core.JobService
@@ -25,18 +23,8 @@ import com.topjohnwu.magisk.core.base.IActivityExtension
 import com.topjohnwu.magisk.core.cmp
 import com.topjohnwu.magisk.core.di.ServiceLocator
 import com.topjohnwu.magisk.core.intent
-import com.topjohnwu.magisk.core.isRunningAsStub
-import com.topjohnwu.magisk.core.ktx.cachedFile
-import com.topjohnwu.magisk.core.ktx.copyAll
-import com.topjohnwu.magisk.core.ktx.copyAndClose
-import com.topjohnwu.magisk.core.ktx.forEach
 import com.topjohnwu.magisk.core.ktx.set
-import com.topjohnwu.magisk.core.ktx.withStreams
-import com.topjohnwu.magisk.core.ktx.writeTo
-import com.topjohnwu.magisk.core.tasks.AppMigration
-import com.topjohnwu.magisk.core.utils.MediaStoreUtils.outputStream
 import com.topjohnwu.magisk.core.utils.ProgressInputStream
-import com.topjohnwu.magisk.utils.APKInstall
 import com.topjohnwu.magisk.view.Notifications
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,13 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import okhttp3.ResponseBody
 import timber.log.Timber
-import java.io.IOException
 import java.io.InputStream
-import java.io.OutputStream
-import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
-import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
 
 /**
  * This class drives the execution of file downloads and notification management.
@@ -69,16 +51,7 @@ import java.util.zip.ZipOutputStream
  * For API 23 - 33, we use a foreground service as a session.
  * For API 34 and higher, we use user-initiated job services as a session.
  */
-class DownloadEngine(
-    private val session: Session
-) {
-
-    interface Session {
-        val context: Context
-
-        fun attachNotification(id: Int, builder: Notification.Builder)
-        fun onDownloadComplete()
-    }
+class DownloadEngine(session: DownloadSession) : DownloadSession by session, DownloadNotifier {
 
     companion object {
         const val ACTION = "com.topjohnwu.magisk.DOWNLOAD"
@@ -99,33 +72,35 @@ class DownloadEngine(
             }
         }
 
-        private fun createIntent(context: Context, subject: Subject) =
-            if (Build.VERSION.SDK_INT >= 34) {
-                context.intent<com.topjohnwu.magisk.core.Receiver>()
-                    .setAction(ACTION)
-                    .putExtra(SUBJECT_KEY, subject)
-            } else {
-                context.intent<com.topjohnwu.magisk.core.Service>()
-                    .setAction(ACTION)
-                    .putExtra(SUBJECT_KEY, subject)
-            }
+        private fun createBroadcastIntent(context: Context, subject: Subject) =
+            context.intent<com.topjohnwu.magisk.core.Receiver>()
+                .setAction(ACTION)
+                .putExtra(SUBJECT_KEY, subject)
+
+        private fun createServiceIntent(context: Context, subject: Subject) =
+            context.intent<com.topjohnwu.magisk.core.Service>()
+                .setAction(ACTION)
+                .putExtra(SUBJECT_KEY, subject)
 
         @SuppressLint("InlinedApi")
         fun getPendingIntent(context: Context, subject: Subject): PendingIntent {
             val flag = PendingIntent.FLAG_IMMUTABLE or
                 PendingIntent.FLAG_UPDATE_CURRENT or
                 PendingIntent.FLAG_ONE_SHOT
-            val intent = createIntent(context, subject)
             return if (Build.VERSION.SDK_INT >= 34) {
                 // On API 34+, download tasks are handled with a user-initiated job.
                 // However, there is no way to schedule a new job directly with a pending intent.
                 // As a workaround, we send the subject to a broadcast receiver and have it
                 // schedule the job for us.
+                val intent = createBroadcastIntent(context, subject)
                 PendingIntent.getBroadcast(context, REQUEST_CODE, intent, flag)
-            } else if (Build.VERSION.SDK_INT >= 26) {
-                PendingIntent.getForegroundService(context, REQUEST_CODE, intent, flag)
             } else {
-                PendingIntent.getService(context, REQUEST_CODE, intent, flag)
+                val intent = createServiceIntent(context, subject)
+                if (Build.VERSION.SDK_INT >= 26) {
+                    PendingIntent.getForegroundService(context, REQUEST_CODE, intent, flag)
+                } else {
+                    PendingIntent.getService(context, REQUEST_CODE, intent, flag)
+                }
             }
         }
 
@@ -140,6 +115,7 @@ class DownloadEngine(
             }
         }
 
+        @SuppressLint("MissingPermission")
         fun start(context: Context, subject: Subject) {
             if (Build.VERSION.SDK_INT >= 34) {
                 val scheduler = context.getSystemService<JobScheduler>()!!
@@ -152,24 +128,29 @@ class DownloadEngine(
                     .setTransientExtras(extras)
                     .build()
                 scheduler.schedule(info)
-            } else if (Build.VERSION.SDK_INT >= 26) {
-                context.startForegroundService(createIntent(context, subject))
             } else {
-                context.startService(createIntent(context, subject))
+                val intent = createServiceIntent(context, subject)
+                if (Build.VERSION.SDK_INT >= 26) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
             }
         }
     }
+
+    private val notifications = SparseArrayCompat<Notification.Builder>()
+    private var attachedId = -1
+    private val job = Job()
+    private val processor = DownloadProcessor(this)
+    private val network get() = ServiceLocator.networkService
 
     fun download(subject: Subject) {
         notifyUpdate(subject.notifyId)
         CoroutineScope(job + Dispatchers.IO).launch {
             try {
                 val stream = network.fetchFile(subject.url).toProgressStream(subject)
-                when (subject) {
-                    is Subject.App -> handleApp(stream, subject)
-                    is Subject.Module -> handleModule(stream, subject.file)
-                    else -> stream.copyAndClose(subject.file.outputStream())
-                }
+                processor.handle(stream, subject)
                 val activity = AppContext.foregroundActivity
                 if (activity != null && subject.autoLaunch) {
                     notifyRemove(subject.notifyId)
@@ -187,16 +168,13 @@ class DownloadEngine(
     @Synchronized
     fun reattach() {
         val builder = notifications[attachedId] ?: return
-        session.attachNotification(attachedId, builder)
+        attachNotification(attachedId, builder)
     }
 
-    private val notifications = SparseArrayCompat<Notification.Builder>()
-    private var attachedId = -1
-
-    private val job = Job()
-
-    private val context get() = session.context
-    private val network get() = ServiceLocator.networkService
+    private fun attach(id: Int, notification: Notification.Builder) {
+        attachedId = id
+        attachNotification(id, notification)
+    }
 
     private fun finalNotify(id: Int, editor: (Notification.Builder) -> Unit): Int {
         val notification = notifyRemove(id)?.also(editor) ?: return -1
@@ -223,19 +201,14 @@ class DownloadEngine(
         subject.pendingIntent(context)?.let { intent -> it.setContentIntent(intent) }
     }
 
-    private fun attachNotification(id: Int, notification: Notification.Builder) {
-        attachedId = id
-        session.attachNotification(id, notification)
-    }
-
     @Synchronized
-    private fun notifyUpdate(id: Int, editor: (Notification.Builder) -> Unit = {}) {
+    override fun notifyUpdate(id: Int, editor: (Notification.Builder) -> Unit) {
         val notification = (notifications[id] ?: Notifications.startProgress("").also {
             notifications[id] = it
         }).apply(editor)
 
         if (attachedId < 0)
-            attachNotification(id, notification)
+            attach(id, notification)
         else
             Notifications.mgr.notify(id, notification.build())
     }
@@ -255,101 +228,17 @@ class DownloadEngine(
                     // There are still remaining notifications, pick one and attach to the session
                     val anotherId = notifications.keyAt(0)
                     val notification = notifications.valueAt(0)
-                    attachNotification(anotherId, notification)
+                    attach(anotherId, notification)
                 } else {
                     // No more notifications left, terminate the session
                     attachedId = -1
-                    session.onDownloadComplete()
+                    onDownloadComplete()
                 }
             }
         }
 
         Notifications.mgr.cancel(id)
         return n
-    }
-
-    private suspend fun handleApp(stream: InputStream, subject: Subject.App) {
-        val external = subject.file.outputStream()
-
-        if (isRunningAsStub) {
-            val updateApk = StubApk.update(context)
-            try {
-                // Download full APK to stub update path
-                stream.copyAndClose(TeeOutputStream(external, updateApk.outputStream()))
-
-                // Also upgrade stub
-                notifyUpdate(subject.notifyId) {
-                    it.setProgress(0, 0, true)
-                        .setContentTitle(context.getString(R.string.hide_app_title))
-                        .setContentText("")
-                }
-
-                // Extract stub
-                val zf = ZipFile(updateApk)
-                val apk = context.cachedFile("stub.apk")
-                apk.delete()
-                zf.getInputStream(zf.getEntry("assets/stub.apk")).writeTo(apk)
-                zf.close()
-
-                // Patch and install
-                subject.intent = AppMigration.upgradeStub(context, apk)
-                    ?: throw IOException("HideAPK patch error")
-                apk.delete()
-            } catch (e: Exception) {
-                // If any error occurred, do not let stub load the new APK
-                updateApk.delete()
-                throw e
-            }
-        } else {
-            val session = APKInstall.startSession(context)
-            stream.copyAndClose(TeeOutputStream(external, session.openStream(context)))
-            subject.intent = session.waitIntent()
-        }
-    }
-
-    private suspend fun handleModule(src: InputStream, file: Uri) {
-        val input = ZipInputStream(src)
-        val output = ZipOutputStream(file.outputStream())
-
-        withStreams(input, output) { zin, zout ->
-            zout.putNextEntry(ZipEntry("META-INF/"))
-            zout.putNextEntry(ZipEntry("META-INF/com/"))
-            zout.putNextEntry(ZipEntry("META-INF/com/google/"))
-            zout.putNextEntry(ZipEntry("META-INF/com/google/android/"))
-            zout.putNextEntry(ZipEntry("META-INF/com/google/android/update-binary"))
-            context.assets.open("module_installer.sh").use { it.copyAll(zout) }
-
-            zout.putNextEntry(ZipEntry("META-INF/com/google/android/updater-script"))
-            zout.write("#MAGISK\n".toByteArray())
-
-            zin.forEach { entry ->
-                val path = entry.name
-                if (path.isNotEmpty() && !path.startsWith("META-INF")) {
-                    zout.putNextEntry(ZipEntry(path))
-                    if (!entry.isDirectory) {
-                        zin.copyAll(zout)
-                    }
-                }
-            }
-        }
-    }
-
-    private class TeeOutputStream(
-        private val o1: OutputStream,
-        private val o2: OutputStream
-    ) : OutputStream() {
-        override fun write(b: Int) {
-            o1.write(b)
-            o2.write(b)
-        }
-        override fun write(b: ByteArray?, off: Int, len: Int) {
-            o1.write(b, off, len)
-            o2.write(b, off, len)
-        }
-        override fun close() {
-            o1.close()
-            o2.close()
-        }
     }
 
     private fun ResponseBody.toProgressStream(subject: Subject): InputStream {

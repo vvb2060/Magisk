@@ -86,55 +86,70 @@ chmod -R 755 .
 #########
 
 CHROMEOS=false
+VENDORBOOT=false
 
 ui_print "- Unpacking boot image"
 ./magiskboot unpack "$BOOTIMAGE"
 
 case $? in
   0 ) ;;
-  1 )
-    abort "! Unsupported/Unknown image format"
-    ;;
   2 )
     ui_print "- ChromeOS boot image detected"
     CHROMEOS=true
+    ;;
+  3 )
+    ui_print "- Vendor boot image detected"
+    VENDORBOOT=true
     ;;
   * )
     abort "! Unable to unpack boot image"
     ;;
 esac
 
-###################
-# Ramdisk Restores
-###################
+#################
+# Ramdisk Checks
+#################
 
-# Test patch status and do restore
+unset RAMDISK
+for path in ramdisk.cpio vendor_ramdisk/init_boot.cpio vendor_ramdisk/ramdisk.cpio; do
+  if [ -e $path ]; then
+    RAMDISK=$path
+    break
+  fi
+done
+
 ui_print "- Checking ramdisk status"
-if [ -e ramdisk.cpio ]; then
-  ./magiskboot cpio ramdisk.cpio test
+if [ -n "$RAMDISK" ]; then
+  ./magiskboot cpio $RAMDISK test
   STATUS=$?
   SKIP_BACKUP=""
 else
-  # Stock A only legacy SAR, or some Android 13 GKIs
+  # No ramdisk found, create one from scratch
+  RAMDISK=ramdisk.cpio
+  # Could be stock A only legacy SAR, or some Android 13 GKIs
   STATUS=0
   SKIP_BACKUP="#"
 fi
-case $((STATUS & 3)) in
-  0 )  # Stock boot
+
+case $STATUS in
+  0 )
+    # Stock boot
     ui_print "- Stock boot image detected"
     SHA1=$(./magiskboot sha1 "$BOOTIMAGE" 2>/dev/null)
     cat $BOOTIMAGE > stock_boot.img
-    cp -af ramdisk.cpio ramdisk.cpio.orig 2>/dev/null
+    cp -af $RAMDISK ramdisk.cpio.orig 2>/dev/null
     ;;
-  1 )  # Magisk patched
+  1 )
+    # Magisk patched
     ui_print "- Magisk patched boot image detected"
-    ./magiskboot cpio ramdisk.cpio \
+    ./magiskboot cpio $RAMDISK \
     "extract .backup/.magisk config.orig" \
     "restore"
-    cp -af ramdisk.cpio ramdisk.cpio.orig
+    cp -af $RAMDISK ramdisk.cpio.orig
     rm -f stock_boot.img
     ;;
-  2 )  # Unsupported
+  2 )
+    # Unsupported
     ui_print "! Boot image patched by unsupported programs"
     abort "! Please restore back to stock boot image"
     ;;
@@ -167,13 +182,14 @@ $BOOTMODE && [ -z "$PREINITDEVICE" ] && PREINITDEVICE=$(./magisk --preinit-devic
 echo "KEEPVERITY=$KEEPVERITY" > config
 echo "KEEPFORCEENCRYPT=$KEEPFORCEENCRYPT" >> config
 echo "RECOVERYMODE=$RECOVERYMODE" >> config
+echo "VENDORBOOT=$VENDORBOOT" >> config
 if [ -n "$PREINITDEVICE" ]; then
   ui_print "- Pre-init storage partition: $PREINITDEVICE"
   echo "PREINITDEVICE=$PREINITDEVICE" >> config
 fi
 [ -n "$SHA1" ] && echo "SHA1=$SHA1" >> config
 
-./magiskboot cpio ramdisk.cpio \
+./magiskboot cpio $RAMDISK \
 "add 0750 init magiskinit" \
 "mkdir 0750 overlay.d" \
 "mkdir 0750 overlay.d/sbin" \
@@ -216,6 +232,13 @@ if [ -f kernel ]; then
   # Before: [mov w2, #-221]   (-__NR_execve)
   # After:  [mov w2, #-32768]
   ./magiskboot hexpatch kernel 821B8012 E2FF8F12 && PATCHEDKERNEL=true
+
+  # Disable Samsung PROCA
+  # proca_config -> proca_magisk
+  ./magiskboot hexpatch kernel \
+  70726F63615F636F6E66696700 \
+  70726F63615F6D616769736B00 \
+  && PATCHEDKERNEL=true
 
   # Force kernel to load rootfs for legacy SAR devices
   # skip_initramfs -> want_initramfs

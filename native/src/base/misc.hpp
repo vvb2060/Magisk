@@ -5,8 +5,7 @@
 #include <functional>
 #include <string_view>
 #include <bitset>
-#include <random>
-#include <cxx.h>
+#include <rust/cxx.h>
 
 #include "xwrap.hpp"
 
@@ -16,8 +15,10 @@ clazz(clazz &&) = delete;
 
 #define ALLOW_MOVE_ONLY(clazz) \
 clazz(const clazz&) = delete;  \
-clazz(clazz &&o) { swap(o); }  \
+clazz(clazz &&o) : clazz() { swap(o); }  \
 clazz& operator=(clazz &&o) { swap(o); return *this; }
+
+struct Utf8CStr;
 
 class mutex_guard {
     DISALLOW_COPY_AND_MOVE(mutex_guard)
@@ -46,81 +47,11 @@ private:
     Func fn;
 };
 
-template <typename T>
-class reversed_container {
-public:
-    reversed_container(T &base) : base(base) {}
-    decltype(std::declval<T>().rbegin()) begin() { return base.rbegin(); }
-    decltype(std::declval<T>().crbegin()) begin() const { return base.crbegin(); }
-    decltype(std::declval<T>().crbegin()) cbegin() const { return base.crbegin(); }
-    decltype(std::declval<T>().rend()) end() { return base.rend(); }
-    decltype(std::declval<T>().crend()) end() const { return base.crend(); }
-    decltype(std::declval<T>().crend()) cend() const { return base.crend(); }
-private:
-    T &base;
-};
-
-template <typename T>
-reversed_container<T> reversed(T &base) {
-    return reversed_container<T>(base);
-}
+template<class T>
+static void default_new(T *&p) { p = new T(); }
 
 template<class T>
-static inline void default_new(T *&p) { p = new T(); }
-
-template<class T>
-static inline void default_new(std::unique_ptr<T> &p) { p.reset(new T()); }
-
-template<typename T, typename Impl>
-class stateless_allocator {
-public:
-    using value_type = T;
-    T *allocate(size_t num) { return static_cast<T*>(Impl::allocate(sizeof(T) * num)); }
-    void deallocate(T *ptr, size_t num) { Impl::deallocate(ptr, sizeof(T) * num); }
-    stateless_allocator()                           = default;
-    stateless_allocator(const stateless_allocator&) = default;
-    stateless_allocator(stateless_allocator&&)      = default;
-    template <typename U>
-    stateless_allocator(const stateless_allocator<U, Impl>&) {}
-    bool operator==(const stateless_allocator&) { return true; }
-    bool operator!=(const stateless_allocator&) { return false; }
-};
-
-class dynamic_bitset_impl {
-public:
-    using slot_type = unsigned long;
-    constexpr static int slot_size = sizeof(slot_type) * 8;
-    using slot_bits = std::bitset<slot_size>;
-
-    size_t slots() const { return slot_list.size(); }
-    slot_type get_slot(size_t slot) const {
-        return slot_list.size() > slot ? slot_list[slot].to_ulong() : 0ul;
-    }
-    void emplace_back(slot_type l) {
-        slot_list.emplace_back(l);
-    }
-protected:
-    slot_bits::reference get(size_t pos) {
-        size_t slot = pos / slot_size;
-        size_t index = pos % slot_size;
-        if (slot_list.size() <= slot) {
-            slot_list.resize(slot + 1);
-        }
-        return slot_list[slot][index];
-    }
-    bool get(size_t pos) const {
-        size_t slot = pos / slot_size;
-        size_t index = pos % slot_size;
-        return slot_list.size() > slot && slot_list[slot][index];
-    }
-private:
-    std::vector<slot_bits> slot_list;
-};
-
-struct dynamic_bitset : public dynamic_bitset_impl {
-    slot_bits::reference operator[] (size_t pos) { return get(pos); }
-    bool operator[] (size_t pos) const { return get(pos); }
-};
+static void default_new(std::unique_ptr<T> &p) { p.reset(new T()); }
 
 struct StringCmp {
     using is_transparent = void;
@@ -129,49 +60,32 @@ struct StringCmp {
 
 struct heap_data;
 
+using ByteSlice = rust::Slice<const uint8_t>;
+using MutByteSlice = rust::Slice<uint8_t>;
+
 // Interchangeable as `&[u8]` in Rust
 struct byte_view {
     byte_view() : _buf(nullptr), _sz(0) {}
     byte_view(const void *buf, size_t sz) : _buf((uint8_t *) buf), _sz(sz) {}
 
-    // byte_view, or any of its subclass, can be copied as byte_view
+    // byte_view, or any of its subclasses, can be copied as byte_view
     byte_view(const byte_view &o) : _buf(o._buf), _sz(o._sz) {}
 
-    // Bridging to Rust slice
-    byte_view(rust::Slice<const uint8_t> o) : byte_view(o.data(), o.size()) {}
-    operator rust::Slice<const uint8_t>() const { return rust::Slice<const uint8_t>(_buf, _sz); }
+    // Transparent conversion to Rust slice
+    byte_view(const ByteSlice o) : byte_view(o.data(), o.size()) {}
+    operator ByteSlice() const { return {_buf, _sz}; }
 
-    // String as bytes
-    byte_view(const char *s, bool with_nul = true)
-    : byte_view(std::string_view(s), with_nul, false) {}
-    byte_view(const std::string &s, bool with_nul = true)
-    : byte_view(std::string_view(s), with_nul, false) {}
-    byte_view(std::string_view s, bool with_nul = true)
-    : byte_view(s, with_nul, true /* string_view is not guaranteed to null terminate */ ) {}
+    // String as bytes, including null terminator
+    byte_view(const char *s) : byte_view(s, strlen(s) + 1) {}
 
-    // Vector as bytes
-    byte_view(const std::vector<uint8_t> &v) : byte_view(v.data(), v.size()) {}
-
-    const uint8_t *buf() const { return _buf; }
-    size_t sz() const { return _sz; }
-
+    const uint8_t *data() const { return _buf; }
+    size_t size() const { return _sz; }
     bool contains(byte_view pattern) const;
-    bool equals(byte_view o) const;
-    heap_data clone() const;
+    bool operator==(byte_view rhs) const;
 
 protected:
     uint8_t *_buf;
     size_t _sz;
-
-private:
-    byte_view(std::string_view s, bool with_nul, bool check_nul)
-    : byte_view(static_cast<const void *>(s.data()), s.length()) {
-        if (with_nul) {
-            if (check_nul && s[s.length()] != '\0')
-                return;
-            ++_sz;
-        }
-    }
 };
 
 // Interchangeable as `&mut [u8]` in Rust
@@ -179,33 +93,19 @@ struct byte_data : public byte_view {
     byte_data() = default;
     byte_data(void *buf, size_t sz) : byte_view(buf, sz) {}
 
-    // byte_data, or any of its subclass, can be copied as byte_data
+    // byte_data, or any of its subclasses, can be copied as byte_data
     byte_data(const byte_data &o) : byte_data(o._buf, o._sz) {}
 
-    // Transparent conversion from common C++ types to mutable byte references
-    byte_data(std::string &s, bool with_nul = true)
-    : byte_data(s.data(), with_nul ? s.length() + 1 : s.length()) {}
-    byte_data(std::vector<uint8_t> &v) : byte_data(v.data(), v.size()) {}
+    // Transparent conversion to Rust slice
+    byte_data(const MutByteSlice o) : byte_data(o.data(), o.size()) {}
+    operator MutByteSlice() const { return {_buf, _sz}; }
 
-    // Bridging to Rust slice
-    byte_data(rust::Slice<uint8_t> o) : byte_data(o.data(), o.size()) {}
-    operator rust::Slice<uint8_t>() { return rust::Slice<uint8_t>(_buf, _sz); }
-
-    using byte_view::buf;
-    uint8_t *buf() { return _buf; }
+    using byte_view::data;
+    uint8_t *data() const { return _buf; }
 
     void swap(byte_data &o);
-    rust::Vec<size_t> patch(byte_view from, byte_view to);
+    rust::Vec<size_t> patch(byte_view from, byte_view to) const;
 };
-
-template<size_t N>
-struct byte_array : public byte_data {
-    byte_array() : byte_data(arr, N), arr{0} {}
-private:
-    uint8_t arr[N];
-};
-
-class byte_stream;
 
 struct heap_data : public byte_data {
     ALLOW_MOVE_ONLY(heap_data)
@@ -213,9 +113,6 @@ struct heap_data : public byte_data {
     heap_data() = default;
     explicit heap_data(size_t sz) : byte_data(calloc(sz, 1), sz) {}
     ~heap_data() { free(_buf); }
-
-    // byte_stream needs to reallocate the internal buffer
-    friend byte_stream;
 };
 
 struct owned_fd {
@@ -233,32 +130,14 @@ private:
     int fd;
 };
 
-rust::Vec<size_t> mut_u8_patch(
-        rust::Slice<uint8_t> buf,
-        rust::Slice<const uint8_t> from,
-        rust::Slice<const uint8_t> to);
+rust::Vec<size_t> mut_u8_patch(MutByteSlice buf, ByteSlice from, ByteSlice to);
 
-uint64_t parse_uint64_hex(std::string_view s);
+uint32_t parse_uint32_hex(std::string_view s);
 int parse_int(std::string_view s);
 
 using thread_entry = void *(*)(void *);
 extern "C" int new_daemon_thread(thread_entry entry, void *arg = nullptr);
 
-static inline bool str_contains(std::string_view s, std::string_view ss) {
-    return s.find(ss) != std::string::npos;
-}
-static inline bool str_starts(std::string_view s, std::string_view ss) {
-    return s.size() >= ss.size() && s.compare(0, ss.size(), ss) == 0;
-}
-static inline bool str_ends(std::string_view s, std::string_view ss) {
-    return s.size() >= ss.size() && s.compare(s.size() - ss.size(), std::string::npos, ss) == 0;
-}
-static inline std::string ltrim(std::string &&s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
-        return !std::isspace(ch);
-    }));
-    return std::move(s);
-}
 static inline std::string rtrim(std::string &&s) {
     s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
         return !std::isspace(ch) && ch != '\0';
@@ -269,12 +148,10 @@ static inline std::string rtrim(std::string &&s) {
 int fork_dont_care();
 int fork_no_orphan();
 void init_argv0(int argc, char **argv);
-void set_nice_name(const char *name);
-uint32_t binary_gcd(uint32_t u, uint32_t v);
+void set_nice_name(Utf8CStr name);
 int switch_mnt_ns(int pid);
 std::string &replace_all(std::string &str, std::string_view from, std::string_view to);
 std::vector<std::string> split(std::string_view s, std::string_view delims);
-std::vector<std::string_view> split_view(std::string_view, std::string_view delims);
 
 // Similar to vsnprintf, but the return value is the written number of bytes
 __printflike(3, 0) int vssprintf(char *dest, size_t size, const char *fmt, va_list ap);
@@ -332,8 +209,6 @@ constexpr auto operator+(T e) noexcept ->
     return static_cast<std::underlying_type_t<T>>(e);
 }
 
-namespace rust {
-
 struct Utf8CStr {
     const char *data() const;
     size_t length() const;
@@ -341,14 +216,14 @@ struct Utf8CStr {
 
     Utf8CStr() : Utf8CStr("", 1) {};
     Utf8CStr(const Utf8CStr &o) = default;
-    Utf8CStr(Utf8CStr &&o) = default;
     Utf8CStr(const char *s) : Utf8CStr(s, strlen(s) + 1) {};
-    Utf8CStr(std::string_view s) : Utf8CStr(s.data(), s.length() + 1) {};
     Utf8CStr(std::string s) : Utf8CStr(s.data(), s.length() + 1) {};
     const char *c_str() const { return this->data(); }
     size_t size() const { return this->length(); }
     bool empty() const { return this->length() == 0 ; }
-    operator std::string_view() { return {data(), length()}; }
+    std::string_view sv() const { return {data(), length()}; }
+    operator std::string_view() const { return sv(); }
+    bool operator==(std::string_view rhs) const { return sv() == rhs; }
 
 private:
 #pragma clang diagnostic push
@@ -357,4 +232,19 @@ private:
 #pragma clang diagnostic pop
 };
 
-} // namespace rust
+// Bindings for std::function to be callable from Rust
+
+using CxxFnBoolStrStr = std::function<bool(rust::Str, rust::Str)>;
+struct FnBoolStrStr : public CxxFnBoolStrStr {
+    using CxxFnBoolStrStr::function;
+    bool call(rust::Str a, rust::Str b) const {
+        return operator()(a, b);
+    }
+};
+using CxxFnBoolStr = std::function<bool(Utf8CStr)>;
+struct FnBoolStr : public CxxFnBoolStr {
+    using CxxFnBoolStr::function;
+    bool call(Utf8CStr s) const {
+        return operator()(s);
+    }
+};

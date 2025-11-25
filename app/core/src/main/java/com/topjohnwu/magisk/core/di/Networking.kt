@@ -5,7 +5,7 @@ import com.squareup.moshi.Moshi
 import com.topjohnwu.magisk.ProviderInstaller
 import com.topjohnwu.magisk.core.BuildConfig
 import com.topjohnwu.magisk.core.Config
-import com.topjohnwu.magisk.core.Info
+import com.topjohnwu.magisk.core.model.DateTimeAdapter
 import com.topjohnwu.magisk.core.utils.LocaleSetting
 import okhttp3.Cache
 import okhttp3.ConnectionSpec
@@ -72,15 +72,13 @@ fun createOkHttpClient(context: Context): OkHttpClient {
         chain.proceed(request.build())
     }
 
-    if (!ProviderInstaller.install(context)) {
-        Info.hasGMS = false
-    }
+    ProviderInstaller.install(context)
 
     return builder.build()
 }
 
 fun createMoshiConverterFactory(): MoshiConverterFactory {
-    val moshi = Moshi.Builder().build()
+    val moshi = Moshi.Builder().add(DateTimeAdapter()).build()
     return MoshiConverterFactory.create(moshi)
 }
 

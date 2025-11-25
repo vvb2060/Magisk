@@ -1,23 +1,30 @@
+use crate::ffi::MagiskInit;
+use base::{
+    Directory, FsPathBuilder, LibcReturn, LoggedResult, ResultExt, Utf8CStr, cstr, debug, libc,
+    nix, parse_mount_info, raw_cstr,
+};
+use cxx::CxxString;
+use nix::{
+    mount::MsFlags,
+    sys::statfs::{FsType, TMPFS_MAGIC, statfs},
+    unistd::{chdir, chroot},
+};
+use num_traits::AsPrimitive;
 use std::{
     collections::BTreeSet,
     ops::Bound::{Excluded, Unbounded},
     pin::Pin,
-    ptr::null as nullptr,
 };
 
-use cxx::CxxString;
+unsafe extern "C" {
+    static environ: *const *mut libc::c_char;
+}
 
-use base::{
-    cstr, debug,
-    libc::{chdir, chroot, mount, MS_MOVE},
-    parse_mount_info, raw_cstr, Directory, LibcReturn, LoggedResult, StringExt, Utf8CStr,
-};
-
-pub fn switch_root(path: &Utf8CStr) {
-    fn inner(path: &Utf8CStr) -> LoggedResult<()> {
+pub(crate) fn switch_root(path: &Utf8CStr) {
+    let res: LoggedResult<()> = try {
         debug!("Switch root to {}", path);
         let mut mounts = BTreeSet::new();
-        let mut rootfs = Directory::open(cstr!("/"))?;
+        let rootfs = Directory::open(cstr!("/"))?;
         for info in parse_mount_info("self") {
             if info.target == "/" || info.target.as_str() == path.as_str() {
                 continue;
@@ -25,42 +32,31 @@ pub fn switch_root(path: &Utf8CStr) {
             if let Some(last_mount) = mounts
                 .range::<String, _>((Unbounded, Excluded(&info.target)))
                 .last()
+                && info.target.starts_with(&format!("{}/", *last_mount))
             {
-                if info.target.starts_with(&format!("{}/", *last_mount)) {
-                    continue;
-                }
-            }
-            let mut new_path = format!("{}/{}", path.as_str(), &info.target);
-            std::fs::create_dir(&new_path).ok();
-
-            unsafe {
-                let mut target = info.target.clone();
-                mount(
-                    target.nul_terminate().as_ptr().cast(),
-                    new_path.nul_terminate().as_ptr().cast(),
-                    nullptr(),
-                    MS_MOVE,
-                    nullptr(),
-                )
-                .as_os_err()?;
+                continue;
             }
 
+            let mut target = info.target.clone();
+            let target = Utf8CStr::from_string(&mut target);
+            let new_path = cstr::buf::default()
+                .join_path(path)
+                .join_path(info.target.trim_start_matches('/'));
+            new_path.mkdirs(0o755).ok();
+            target.move_mount_to(&new_path)?;
             mounts.insert(info.target);
         }
-        unsafe {
-            chdir(path.as_ptr()).as_os_err()?;
-            mount(path.as_ptr(), raw_cstr!("/"), nullptr(), MS_MOVE, nullptr()).as_os_err()?;
-            chroot(raw_cstr!("."));
-        }
+        chdir(path)?;
+        path.move_mount_to(cstr!("/"))?;
+        chroot(cstr!("."))?;
 
         debug!("Cleaning rootfs");
         rootfs.remove_all()?;
-        Ok(())
-    }
-    inner(path).ok();
+    };
+    res.ok();
 }
 
-pub fn is_device_mounted(dev: u64, target: Pin<&mut CxxString>) -> bool {
+pub(crate) fn is_device_mounted(dev: u64, target: Pin<&mut CxxString>) -> bool {
     for mount in parse_mount_info("self") {
         if mount.root == "/" && mount.device == dev {
             target.push_str(&mount.target);
@@ -68,4 +64,49 @@ pub fn is_device_mounted(dev: u64, target: Pin<&mut CxxString>) -> bool {
         }
     }
     false
+}
+
+const RAMFS_MAGIC: u32 = 0x858458f6;
+
+pub(crate) fn is_rootfs() -> bool {
+    if let Ok(s) = statfs(cstr!("/")) {
+        s.filesystem_type() == FsType(RAMFS_MAGIC.as_()) || s.filesystem_type() == TMPFS_MAGIC
+    } else {
+        false
+    }
+}
+
+impl MagiskInit {
+    pub(crate) fn prepare_data(&self) {
+        debug!("Setup data tmp");
+        cstr!("/data").mkdir(0o755).log_ok();
+        nix::mount::mount(
+            Some(cstr!("magisk")),
+            cstr!("/data"),
+            Some(cstr!("tmpfs")),
+            MsFlags::empty(),
+            Some(cstr!("mode=755")),
+        )
+        .check_os_err("mount", Some("/data"), Some("tmpfs"))
+        .log_ok();
+
+        cstr!("/init").copy_to(cstr!("/data/magiskinit")).ok();
+        cstr!("/.backup").copy_to(cstr!("/data/.backup")).ok();
+        cstr!("/overlay.d").copy_to(cstr!("/data/overlay.d")).ok();
+    }
+
+    pub(crate) fn exec_init(&mut self) {
+        for path in self.mount_list.iter_mut().rev() {
+            let path = Utf8CStr::from_string(path);
+            if path.unmount().log().is_ok() {
+                debug!("Unmount [{}]", path);
+            }
+        }
+        unsafe {
+            libc::execve(raw_cstr!("/init"), self.argv.cast(), environ.cast())
+                .check_err()
+                .log_ok();
+        }
+        std::process::exit(1);
+    }
 }

@@ -5,14 +5,15 @@ import com.topjohnwu.magisk.core.Const
 import com.topjohnwu.magisk.core.di.ServiceLocator
 import com.topjohnwu.magisk.core.utils.RootUtils
 import com.topjohnwu.superuser.Shell
+import com.topjohnwu.superuser.nio.ExtendedFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.IOException
-import java.util.*
+import java.util.Locale
 
 data class LocalModule(
-    private val path: String,
+    val base: ExtendedFile,
 ) : Module() {
     private val svc get() = ServiceLocator.networkService
 
@@ -24,19 +25,18 @@ data class LocalModule(
     var description: String = ""
     var updateInfo: OnlineModule? = null
     var outdated = false
-
     private var updateUrl: String = ""
-    private val removeFile = RootUtils.fs.getFile(path, "remove")
-    private val disableFile = RootUtils.fs.getFile(path, "disable")
-    private val updateFile = RootUtils.fs.getFile(path, "update")
-    private val riruFolder = RootUtils.fs.getFile(path, "riru")
-    private val zygiskFolder = RootUtils.fs.getFile(path, "zygisk")
-    private val unloaded = RootUtils.fs.getFile(zygiskFolder, "unloaded")
 
-    val updated: Boolean get() = updateFile.exists()
-    val isRiru: Boolean get() = (id == "riru-core") || riruFolder.exists()
-    val isZygisk: Boolean get() = zygiskFolder.exists()
-    val zygiskUnloaded: Boolean get() = unloaded.exists()
+    private val removeFile = base.getChildFile("remove")
+    private val disableFile = base.getChildFile("disable")
+    private val updateFile = base.getChildFile("update")
+    val zygiskFolder = base.getChildFile("zygisk")
+
+    val updated get() = updateFile.exists()
+    val isRiru = (id == "riru-core") || base.getChildFile("riru").exists()
+    val isZygisk = zygiskFolder.exists()
+    val zygiskUnloaded = zygiskFolder.getChildFile("unloaded").exists()
+    val hasAction = base.getChildFile("action.sh").exists()
 
     var enable: Boolean
         get() = !disableFile.exists()
@@ -89,12 +89,11 @@ data class LocalModule(
 
     init {
         runCatching {
-            parseProps(Shell.cmd("dos2unix < $path/module.prop").exec().out)
+            parseProps(Shell.cmd("dos2unix < $base/module.prop").exec().out)
         }
 
         if (id.isEmpty()) {
-            val sep = path.lastIndexOf('/')
-            id = path.substring(sep + 1)
+            id = base.name
         }
 
         if (name.isEmpty()) {
@@ -122,14 +121,14 @@ data class LocalModule(
 
     companion object {
 
-        fun loaded() = RootUtils.fs.getFile(Const.MAGISK_PATH).exists()
+        fun loaded() = RootUtils.fs.getFile(Const.MODULE_PATH).exists()
 
         suspend fun installed() = withContext(Dispatchers.IO) {
-            RootUtils.fs.getFile(Const.MAGISK_PATH)
+            RootUtils.fs.getFile(Const.MODULE_PATH)
                 .listFiles()
                 .orEmpty()
                 .filter { !it.isFile && !it.isHidden }
-                .map { LocalModule("${Const.MAGISK_PATH}/${it.name}") }
+                .map { LocalModule(it) }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
         }
     }

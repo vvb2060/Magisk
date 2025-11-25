@@ -2,6 +2,7 @@ package com.topjohnwu.magisk.core
 
 import android.os.Build
 import android.os.Process
+import com.topjohnwu.magisk.core.BuildConfig.APP_VERSION_CODE
 
 @Suppress("DEPRECATION")
 object Const {
@@ -14,23 +15,22 @@ object Const {
         else Build.SUPPORTED_32_BIT_ABIS.firstOrNull()
 
     // Paths
-    const val MAGISK_PATH  = "/data/adb/modules"
+    const val MODULE_PATH  = "/data/adb/modules"
     const val TMPDIR = "/dev/tmp"
     const val MAGISK_LOG = "/cache/magisk.log"
 
     // Misc
     val USER_ID = Process.myUid() / 100000
-    val APP_IS_CANARY get() = Version.isCanary(BuildConfig.APP_VERSION_CODE)
 
     object Version {
         const val MIN_VERSION = "v22.0"
         const val MIN_VERCODE = 22000
 
+        private fun isCanary() = (Info.env.versionCode % 100) != 0
         fun atLeast_24_0() = Info.env.versionCode >= 24000 || isCanary()
         fun atLeast_25_0() = Info.env.versionCode >= 25000 || isCanary()
-        fun isCanary() = isCanary(Info.env.versionCode)
-
-        fun isCanary(ver: Int) = ver > 0 && ver % 100 != 0
+        fun atLeast_28_0() = Info.env.versionCode >= 28000 || isCanary()
+        fun atLeast_30_1() = Info.env.versionCode >= 30100 || isCanary()
     }
 
     object ID {
@@ -42,13 +42,9 @@ object Const {
         const val PATREON_URL = "https://www.patreon.com/topjohnwu"
         const val SOURCE_CODE_URL = "https://github.com/topjohnwu/Magisk"
 
-        val CHANGELOG_URL = if (APP_IS_CANARY) Info.remote.magisk.note
-        else "https://topjohnwu.github.io/Magisk/releases/${BuildConfig.APP_VERSION_CODE}.md"
-
-        const val GITHUB_RAW_URL = "https://raw.githubusercontent.com/"
         const val GITHUB_API_URL = "https://api.github.com/"
         const val GITHUB_PAGE_URL = "https://topjohnwu.github.io/magisk-files/"
-        const val JS_DELIVR_URL = "https://cdn.jsdelivr.net/gh/"
+        const val INVALID_URL = "https://example.com/"
     }
 
     object Key {

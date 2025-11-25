@@ -2,10 +2,14 @@
 # Magisk app internal scripts
 ##################################
 
+# $1 = delay
+# $2 = command
 run_delay() {
   (sleep $1; $2)&
 }
 
+# $1 = version string
+# $2 = version code
 env_check() {
   for file in busybox magiskboot magiskinit util_functions.sh boot_patch.sh; do
     [ -f "$MAGISKBIN/$file" ] || return 1
@@ -21,6 +25,8 @@ env_check() {
   return 0
 }
 
+# $1 = dir to copy
+# $2 = destination (optional)
 cp_readlink() {
   if [ -z $2 ]; then
     cd $1
@@ -39,6 +45,7 @@ cp_readlink() {
   cd /
 }
 
+# $1 = install dir
 fix_env() {
   # Cleanup and make dirs
   rm -rf $MAGISKBIN/*
@@ -49,6 +56,8 @@ fix_env() {
   chown -R 0:0 $MAGISKBIN
 }
 
+# $1 = install dir
+# $2 = boot partition
 direct_install() {
   echo "- Flashing new boot image"
   flash_image $1/new-boot.img $2
@@ -70,6 +79,7 @@ direct_install() {
   return 0
 }
 
+# $1 = uninstaller zip
 run_uninstaller() {
   rm -rf /dev/tmp
   mkdir -p /dev/tmp/install
@@ -77,30 +87,25 @@ run_uninstaller() {
   INSTALLER=/dev/tmp/install sh /dev/tmp/install/assets/uninstaller.sh dummy 1 "$1"
 }
 
+# $1 = boot partition
 restore_imgs() {
-  [ -z $SHA1 ] && return 1
+  local SHA1=$(grep_prop SHA1 $MAGISKTMP/.magisk/config)
   local BACKUPDIR=/data/magisk_backup_$SHA1
   [ -d $BACKUPDIR ] || return 1
-
-  get_flags
-  find_boot_image
-
-  for name in dtb dtbo; do
-    [ -f $BACKUPDIR/${name}.img.gz ] || continue
-    local IMAGE=$(find_block $name$SLOT)
-    [ -z $IMAGE ] && continue
-    flash_image $BACKUPDIR/${name}.img.gz $IMAGE
-  done
   [ -f $BACKUPDIR/boot.img.gz ] || return 1
-  flash_image $BACKUPDIR/boot.img.gz $BOOTIMAGE
+  flash_image $BACKUPDIR/boot.img.gz $1
 }
 
+# $1 = path to bootctl executable
 post_ota() {
   cd /data/adb
   cp -f $1 bootctl
   rm -f $1
   chmod 755 bootctl
-  ./bootctl hal-info || return
+  if ! ./bootctl hal-info; then
+    rm -f bootctl
+    return
+  fi
   SLOT_NUM=0
   [ $(./bootctl get-current-slot) -eq 0 ] && SLOT_NUM=1
   ./bootctl set-active-boot-slot $SLOT_NUM
@@ -113,24 +118,8 @@ EOF
   cd /
 }
 
-add_hosts_module() {
-  # Do not touch existing hosts module
-  [ -d /data/adb/modules/hosts ] && return
-  cd /data/adb/modules
-  mkdir -p hosts/system/etc
-  cat << EOF > hosts/module.prop
-id=hosts
-name=Systemless Hosts
-version=1.0
-versionCode=1
-author=Magisk
-description=Magisk app built-in systemless hosts module
-EOF
-  magisk --clone /system/etc/hosts hosts/system/etc/hosts
-  touch hosts/update
-  cd /
-}
-
+# $1 = APK
+# $2 = package name
 adb_pm_install() {
   local tmp=/data/local/tmp/temp.apk
   cp -f "$1" $tmp
@@ -189,6 +178,15 @@ printvar() {
   eval echo $1=\$$1
 }
 
+run_action() {
+  local MODID="$1"
+  cd "/data/adb/modules/$MODID"
+  sh ./action.sh
+  local RES=$?
+  cd /
+  return $RES
+}
+
 ##########################
 # Non-root util_functions
 ##########################
@@ -216,6 +214,7 @@ get_flags() {
     PATCHVBMETAFLAG=true
   fi
   [ -z $RECOVERYMODE ] && RECOVERYMODE=false
+  [ -z $VENDORBOOT ] && VENDORBOOT=false
 }
 
 run_migrations() { return; }
@@ -232,7 +231,6 @@ app_init() {
   check_boot_ramdisk && RAMDISKEXIST=true
   get_flags >/dev/null
   run_migrations >/dev/null
-  SHA1=$(grep_prop SHA1 $MAGISKTMP/.magisk/config)
   check_encryption
 
   # Dump variables
@@ -246,6 +244,7 @@ app_init() {
   printvar RECOVERYMODE
   printvar KEEPVERITY
   printvar KEEPFORCEENCRYPT
+  printvar VENDORBOOT
 }
 
 export BOOTMODE=true

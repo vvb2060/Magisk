@@ -1,3 +1,4 @@
+#include <sys/mman.h>
 #include <android/dlext.h>
 #include <dlfcn.h>
 
@@ -9,6 +10,13 @@
 #include "module.hpp"
 
 using namespace std;
+
+static int zygisk_request(int req) {
+    int fd = connect_daemon(RequestCode::ZYGISK);
+    if (fd < 0) return fd;
+    write_int(fd, req);
+    return fd;
+}
 
 ZygiskModule::ZygiskModule(int id, void *handle, void *entry)
     : id(id), handle(handle), entry{entry}, api{}, mod{nullptr} {
@@ -77,7 +85,12 @@ bool ZygiskModule::valid() const {
 }
 
 int ZygiskModule::connectCompanion() const {
-    if (int fd = zygisk_request(ZygiskRequest::CONNECT_COMPANION); fd >= 0) {
+    if (int fd = zygisk_request(+ZygiskRequest::ConnectCompanion); fd >= 0) {
+#ifdef __LP64__
+        write_any<bool>(fd, true);
+#else
+        write_any<bool>(fd, false);
+#endif
         write_int(fd, id);
         return fd;
     }
@@ -85,11 +98,9 @@ int ZygiskModule::connectCompanion() const {
 }
 
 int ZygiskModule::getModuleDir() const {
-    if (int fd = zygisk_request(ZygiskRequest::GET_MODDIR); fd >= 0) {
+    if (owned_fd fd = zygisk_request(+ZygiskRequest::GetModDir); fd >= 0) {
         write_int(fd, id);
-        int dfd = recv_fd(fd);
-        close(fd);
-        return dfd;
+        return recv_fd(fd);
     }
     return -1;
 }
@@ -205,6 +216,24 @@ bool ZygiskContext::plt_hook_commit() {
 
 // -----------------------------------------------------------------
 
+int ZygiskContext::get_module_info(int uid, rust::Vec<int> &fds) {
+    if (int fd = zygisk_request(+ZygiskRequest::GetInfo); fd >= 0) {
+        write_int(fd, uid);
+        write_string(fd, process);
+#ifdef __LP64__
+        write_any<bool>(fd, true);
+#else
+        write_any<bool>(fd, false);
+#endif
+        xxread(fd, &info_flags, sizeof(info_flags));
+        if (zygisk_should_load_module(info_flags)) {
+            fds = recv_fds(fd);
+        }
+        return fd;
+    }
+    return -1;
+}
+
 void ZygiskContext::sanitize_fds() {
     zygisk_close_logd();
 
@@ -221,7 +250,7 @@ void ZygiskContext::sanitize_fds() {
             env->SetIntArrayRegion(
                     array, old_len, static_cast<int>(exempted_fds.size()), exempted_fds.data());
             for (int fd : exempted_fds) {
-                if (fd >= 0 && fd < MAX_FD_SIZE) {
+                if (fd >= 0 && fd < allowed_fds.size()) {
                     allowed_fds[fd] = true;
                 }
             }
@@ -234,7 +263,7 @@ void ZygiskContext::sanitize_fds() {
             int len = env->GetArrayLength(fdsToIgnore);
             for (int i = 0; i < len; ++i) {
                 int fd = arr[i];
-                if (fd >= 0 && fd < MAX_FD_SIZE) {
+                if (fd >= 0 && fd < allowed_fds.size()) {
                     allowed_fds[fd] = true;
                 }
             }
@@ -252,7 +281,7 @@ void ZygiskContext::sanitize_fds() {
     int dfd = dirfd(dir.get());
     for (dirent *entry; (entry = xreaddir(dir.get()));) {
         int fd = parse_int(entry->d_name);
-        if ((fd < 0 || fd >= MAX_FD_SIZE || !allowed_fds[fd]) && fd != dfd) {
+        if ((fd < 0 || fd >= allowed_fds.size() || !allowed_fds[fd]) && fd != dfd) {
             close(fd);
         }
     }
@@ -291,7 +320,7 @@ void ZygiskContext::fork_pre() {
     auto dir = xopen_dir("/proc/self/fd");
     for (dirent *entry; (entry = xreaddir(dir.get()));) {
         int fd = parse_int(entry->d_name);
-        if (fd < 0 || fd >= MAX_FD_SIZE) {
+        if (fd < 0 || fd >= allowed_fds.size()) {
             close(fd);
             continue;
         }
@@ -310,16 +339,17 @@ void ZygiskContext::fork_post() {
     sigmask(SIG_UNBLOCK, SIGCHLD);
 }
 
-void ZygiskContext::run_modules_pre(const vector<int> &fds) {
+void ZygiskContext::run_modules_pre(rust::Vec<int> &fds) {
     for (int i = 0; i < fds.size(); ++i) {
+        owned_fd fd = fds[i];
         struct stat s{};
-        if (fstat(fds[i], &s) != 0 || !S_ISREG(s.st_mode)) {
-            close(fds[i]);
+        if (fstat(fd, &s) != 0 || !S_ISREG(s.st_mode)) {
+            fds[i] = -1;
             continue;
         }
         android_dlextinfo info {
             .flags = ANDROID_DLEXT_USE_LIBRARY_FD,
-            .library_fd = fds[i],
+            .library_fd = fd,
         };
         if (void *h = android_dlopen_ext("/jit-cache", RTLD_LAZY, &info)) {
             if (void *e = dlsym(h, "zygisk_module_entry")) {
@@ -327,8 +357,8 @@ void ZygiskContext::run_modules_pre(const vector<int> &fds) {
             }
         } else if (flags & SERVER_FORK_AND_SPECIALIZE) {
             ZLOGW("Failed to dlopen zygisk module: %s\n", dlerror());
+            fds[i] = -1;
         }
-        close(fds[i]);
     }
 
     for (auto it = modules.begin(); it != modules.end();) {
@@ -364,20 +394,19 @@ void ZygiskContext::run_modules_post() {
 void ZygiskContext::app_specialize_pre() {
     flags |= APP_SPECIALIZE;
 
-    vector<int> module_fds;
-    int fd = remote_get_info(args.app->uid, process, &info_flags, module_fds);
+    rust::Vec<int> module_fds;
+    owned_fd fd = get_module_info(args.app->uid, module_fds);
     if ((info_flags & UNMOUNT_MASK) == UNMOUNT_MASK) {
         ZLOGI("[%s] is on the denylist\n", process);
         flags |= DO_REVERT_UNMOUNT;
     } else if (fd >= 0) {
         run_modules_pre(module_fds);
     }
-    close(fd);
 }
 
 void ZygiskContext::app_specialize_post() {
     run_modules_post();
-    if (info_flags & PROCESS_IS_MAGISK_APP) {
+    if (info_flags & +ZygiskStateFlags::ProcessIsMagiskApp) {
         setenv("ZYGISK_ENABLED", "1", 1);
     }
 
@@ -386,25 +415,22 @@ void ZygiskContext::app_specialize_post() {
 }
 
 void ZygiskContext::server_specialize_pre() {
-    vector<int> module_fds;
-    int fd = remote_get_info(1000, "system_server", &info_flags, module_fds);
-    if (fd >= 0) {
+    rust::Vec<int> module_fds;
+    if (owned_fd fd = get_module_info(1000, module_fds); fd >= 0) {
         if (module_fds.empty()) {
             write_int(fd, 0);
         } else {
             run_modules_pre(module_fds);
 
-            // Send the bitset of module status back to magiskd from system_server
-            dynamic_bitset bits;
-            for (const auto &m : modules)
-                bits[m.getId()] = true;
-            write_int(fd, static_cast<int>(bits.slots()));
-            for (int i = 0; i < bits.slots(); ++i) {
-                auto l = bits.get_slot(i);
-                xwrite(fd, &l, sizeof(l));
+            // Find all failed module ids and send it back to magiskd
+            vector<int> failed_ids;
+            for (int i = 0; i < module_fds.size(); ++i) {
+                if (module_fds[i] < 0) {
+                    failed_ids.push_back(i);
+                }
             }
+            write_vector(fd, failed_ids);
         }
-        close(fd);
     }
 }
 
@@ -430,6 +456,7 @@ void ZygiskContext::nativeSpecializeAppProcess_post() {
 void ZygiskContext::nativeForkSystemServer_pre() {
     ZLOGV("pre  forkSystemServer\n");
     flags |= SERVER_FORK_AND_SPECIALIZE;
+    process = "system_server";
 
     fork_pre();
     if (is_child()) {

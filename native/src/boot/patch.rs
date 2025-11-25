@@ -45,7 +45,7 @@ fn remove_pattern(buf: &mut [u8], pattern_matcher: unsafe fn(&[u8]) -> Option<us
                 let skipped = buf.get_unchecked(read..(read + len));
                 // SAFETY: all matching patterns are ASCII bytes
                 let skipped = std::str::from_utf8_unchecked(skipped);
-                eprintln!("Remove pattern [{}]", skipped);
+                eprintln!("Remove pattern [{skipped}]");
                 sz -= len;
                 read += len;
             } else {
@@ -63,15 +63,17 @@ fn remove_pattern(buf: &mut [u8], pattern_matcher: unsafe fn(&[u8]) -> Option<us
 
 pub fn patch_verity(buf: &mut [u8]) -> usize {
     unsafe fn match_verity_pattern(buf: &[u8]) -> Option<usize> {
-        match_patterns!(
-            buf,
-            b"verifyatboot",
-            b"verify",
-            b"avb_keys",
-            b"avb",
-            b"support_scfs",
-            b"fsverity"
-        )
+        unsafe {
+            match_patterns!(
+                buf,
+                b"verifyatboot",
+                b"verify",
+                b"avb_keys",
+                b"avb",
+                b"support_scfs",
+                b"fsverity"
+            )
+        }
     }
 
     remove_pattern(buf, match_verity_pattern)
@@ -79,7 +81,7 @@ pub fn patch_verity(buf: &mut [u8]) -> usize {
 
 pub fn patch_encryption(buf: &mut [u8]) -> usize {
     unsafe fn match_encryption_pattern(buf: &[u8]) -> Option<usize> {
-        match_patterns!(buf, b"forceencrypt", b"forcefdeorfbe", b"fileencryption")
+        unsafe { match_patterns!(buf, b"forceencrypt", b"forcefdeorfbe", b"fileencryption") }
     }
 
     remove_pattern(buf, match_encryption_pattern)
@@ -95,27 +97,22 @@ fn hex2byte(hex: &[u8]) -> Vec<u8> {
         let low = bytes[1].to_ascii_uppercase() - b'0';
         let h = if high > 9 { high - 7 } else { high };
         let l = if low > 9 { low - 7 } else { low };
-        v.push(h << 4 | l);
+        v.push((h << 4) | l);
     }
     v
 }
 
-pub fn hexpatch(file: &[u8], from: &[u8], to: &[u8]) -> bool {
-    fn inner(file: &[u8], from: &[u8], to: &[u8]) -> LoggedResult<bool> {
-        let file = Utf8CStr::from_bytes(file)?;
-        let from = Utf8CStr::from_bytes(from)?;
-        let to = Utf8CStr::from_bytes(to)?;
-
+pub fn hexpatch(file: &Utf8CStr, from: &Utf8CStr, to: &Utf8CStr) -> bool {
+    let res: LoggedResult<bool> = try {
         let mut map = MappedFile::open_rw(file)?;
         let pattern = hex2byte(from.as_bytes());
         let patch = hex2byte(to.as_bytes());
 
         let v = map.patch(pattern.as_slice(), patch.as_slice());
         for off in &v {
-            eprintln!("Patch @ {:#010X} [{}] -> [{}]", off, from, to);
+            eprintln!("Patch @ {off:#010X} [{from}] -> [{to}]");
         }
-
-        Ok(!v.is_empty())
-    }
-    inner(file, from, to).unwrap_or(false)
+        !v.is_empty()
+    };
+    res.unwrap_or(false)
 }

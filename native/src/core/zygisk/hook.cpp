@@ -1,4 +1,6 @@
+#include <sys/mman.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
 #include <dlfcn.h>
 #include <unwind.h>
 #include <span>
@@ -215,9 +217,15 @@ DCL_HOOK_FUNC(static int, pthread_attr_destroy, void *target) {
 
 // -----------------------------------------------------------------
 
+static size_t get_fd_max() {
+    rlimit r{32768, 32768};
+    getrlimit(RLIMIT_NOFILE, &r);
+    return r.rlim_max;
+}
+
 ZygiskContext::ZygiskContext(JNIEnv *env, void *args) :
     env(env), args{args}, process(nullptr), pid(-1), flags(0), info_flags(0),
-    hook_info_lock(PTHREAD_MUTEX_INITIALIZER) { g_ctx = this; }
+    allowed_fds(get_fd_max()), hook_info_lock(PTHREAD_MUTEX_INITIALIZER) { g_ctx = this; }
 
 ZygiskContext::~ZygiskContext() {
     // This global pointer points to a variable on the stack.
@@ -358,7 +366,7 @@ void HookContext::post_native_bridge_load(void *handle) {
     auto nb = get_prop(NBPROP);
     auto len = sizeof(ZYGISKLDR) - 1;
     if (nb.size() > len) {
-        arg.load_native_bridge(nb.data() + len, arg.callbacks);
+        arg.load_native_bridge(nb.c_str() + len, arg.callbacks);
     }
     runtime_callbacks = arg.callbacks;
 }
@@ -408,10 +416,7 @@ void HookContext::hook_plt() {
         ZLOGE("plt_hook failed\n");
 
     // Remove unhooked methods
-    plt_backup.erase(
-            std::remove_if(plt_backup.begin(), plt_backup.end(),
-            [](auto &t) { return *std::get<3>(t) == nullptr;}),
-            plt_backup.end());
+    std::erase_if(plt_backup, [](auto &t) { return *std::get<3>(t) == nullptr; });
 }
 
 void HookContext::hook_unloader() {
@@ -460,35 +465,42 @@ void HookContext::hook_jni_methods(JNIEnv *env, const char *clz, JNIMethods meth
     auto total = runtime_callbacks->getNativeMethodCount(env, clazz);
     auto old_methods = std::make_unique_for_overwrite<JNINativeMethod[]>(total);
     runtime_callbacks->getNativeMethods(env, clazz, old_methods.get(), total);
-    auto new_methods = std::make_unique_for_overwrite<JNINativeMethod[]>(total);
 
-    // Replace the method
+    // WARNING: the signature field returned from getNativeMethods is in a non-standard format.
+    // DO NOT TRY TO USE IT. This is the reason why we try to call RegisterNatives on every single
+    // provided JNI methods directly to be 100% sure about whether a signature matches or not.
+
+    // Replace methods
     for (auto &method : methods) {
         // It's useful to allow nullptr function pointer for restoring hook
         if (!method.fnPtr) continue;
+
         // It's normal that the method is not found
-        if (env->RegisterNatives(clazz, &method, 1) == JNI_ERR ||
-            env->ExceptionCheck() == JNI_TRUE) {
+        if (env->RegisterNatives(clazz, &method, 1) == JNI_ERR || env->ExceptionCheck() == JNI_TRUE) {
             if (auto exception = env->ExceptionOccurred()) {
                 env->DeleteLocalRef(exception);
             }
             env->ExceptionClear();
             method.fnPtr = nullptr;
-            continue;
         }
-        // Find the old function pointer and return to caller
-        runtime_callbacks->getNativeMethods(env, clazz, new_methods.get(), total);
+    }
+
+    // Fetch the new set of native methods
+    auto new_methods = std::make_unique_for_overwrite<JNINativeMethod[]>(total);
+    runtime_callbacks->getNativeMethods(env, clazz, new_methods.get(), total);
+
+    // Find the old function pointer and return to caller
+    for (auto &method : methods) {
+        if (!method.fnPtr) continue;
         for (auto i = 0; i < total; ++i) {
             auto &new_method = new_methods[i];
-            if (new_method.fnPtr == method.fnPtr && strcmp(new_method.name, method.name) == 0) {
+            if (new_method.fnPtr == method.fnPtr) {
                 auto &old_method = old_methods[i];
-                ZLOGD("replace %s#%s%s %p -> %p\n", clz,
-                      method.name, method.signature, old_method.fnPtr, method.fnPtr);
+                ZLOGV("replace %s#%s%s %p -> %p\n", clz, method.name, method.signature, old_method.fnPtr, method.fnPtr);
                 method.fnPtr = old_method.fnPtr;
                 break;
             }
         }
-        old_methods.swap(new_methods);
     }
 }
 

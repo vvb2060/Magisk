@@ -7,7 +7,6 @@ import com.topjohnwu.magisk.core.Const
 import com.topjohnwu.magisk.core.ktx.writeTo
 import com.topjohnwu.magisk.core.utils.MediaStoreUtils.displayName
 import com.topjohnwu.magisk.core.utils.MediaStoreUtils.inputStream
-import com.topjohnwu.magisk.core.utils.unzip
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -47,18 +46,12 @@ open class FlashZip(
             }
         }
 
-        val isValid = try {
-            zipFile.unzip(installDir, "META-INF/com/google/android", true)
-            val script = File(installDir, "updater-script")
-            script.readText().contains("#MAGISK")
+        try {
+            val binary = File(installDir, "update-binary")
+            AppContext.assets.open("module_installer.sh").use { it.writeTo(binary) }
         } catch (e: IOException) {
             console.add("! Unzip error")
             throw e
-        }
-
-        if (!isValid) {
-            console.add("! This zip is not a Magisk module!")
-            return false
         }
 
         console.add("- Installing ${mUri.displayName}")

@@ -19,12 +19,18 @@ object Info {
 
     var stub: StubApk.Data? = null
 
-    val EMPTY_REMOTE = UpdateInfo()
-    var remote = EMPTY_REMOTE
-    suspend fun getRemote(svc: NetworkService): UpdateInfo? {
-        return if (remote === EMPTY_REMOTE) {
-            svc.fetchUpdate()?.apply { remote = this }
-        } else remote
+    private val EMPTY_UPDATE = UpdateInfo()
+    var update = EMPTY_UPDATE
+        private set
+
+    suspend fun fetchUpdate(svc: NetworkService): UpdateInfo? {
+        return if (update === EMPTY_UPDATE) {
+            svc.fetchUpdate()?.apply { update = this }
+        } else update
+    }
+
+    fun resetUpdate() {
+        update = EMPTY_UPDATE
     }
 
     var isRooted = false
@@ -41,13 +47,14 @@ object Info {
         private set
     var slot = ""
         private set
+    var isVendorBoot = false
+        private set
     @JvmField val isZygiskEnabled = System.getenv("ZYGISK_ENABLED") == "1"
     @JvmStatic val isFDE get() = crypto == "block"
     @JvmStatic var ramdisk = false
         private set
     private var crypto = ""
 
-    var hasGMS = true
     val isEmulator =
         Build.DEVICE.contains("vsoc")
             || getProperty("ro.kernel.qemu", "0") == "1"
@@ -108,6 +115,7 @@ object Info {
         crypto = getVar("CRYPTOTYPE")
         slot = getVar("SLOT")
         legacySAR = getBool("LEGACYSAR")
+        isVendorBoot = getBool("VENDORBOOT")
 
         // Default presets
         Config.recovery = getBool("RECOVERYMODE")

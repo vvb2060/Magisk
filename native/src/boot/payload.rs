@@ -1,17 +1,15 @@
-use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-
+use crate::compress::get_decoder;
+use crate::ffi::check_fmt;
+use crate::proto::update_metadata::{DeltaArchiveManifest, mod_InstallOperation::Type};
+use base::{LoggedError, LoggedResult, ReadSeekExt, ResultExt, WriteExt, error};
 use byteorder::{BigEndian, ReadBytesExt};
 use quick_protobuf::{BytesReader, MessageRead};
-
-use base::libc::c_char;
-use base::{error, LoggedError, LoggedResult, ReadSeekExt, StrErr, Utf8CStr};
-use base::{ResultExt, WriteExt};
-
-use crate::ffi;
-use crate::proto::update_metadata::mod_InstallOperation::Type;
-use crate::proto::update_metadata::DeltaArchiveManifest;
+use std::io::Cursor;
+use std::{
+    fs::File,
+    io::{BufReader, Read, Seek, SeekFrom, Write},
+    os::fd::FromRawFd,
+};
 
 macro_rules! bad_payload {
     ($msg:literal) => {{
@@ -26,15 +24,15 @@ macro_rules! bad_payload {
 
 const PAYLOAD_MAGIC: &str = "CrAU";
 
-fn do_extract_boot_from_payload(
-    in_path: &Utf8CStr,
-    partition_name: Option<&Utf8CStr>,
-    out_path: Option<&Utf8CStr>,
+pub fn extract_boot_from_payload(
+    in_path: &str,
+    partition_name: Option<&str>,
+    out_path: Option<&str>,
 ) -> LoggedResult<()> {
     let mut reader = BufReader::new(if in_path == "-" {
         unsafe { File::from_raw_fd(0) }
     } else {
-        File::open(in_path).log_with_msg(|w| write!(w, "Cannot open '{}'", in_path))?
+        File::open(in_path).log_with_msg(|w| write!(w, "Cannot open '{in_path}'"))?
     });
 
     let buf = &mut [0u8; 4];
@@ -107,7 +105,7 @@ fn do_extract_boot_from_payload(
     };
 
     let mut out_file =
-        File::create(out_path).log_with_msg(|w| write!(w, "Cannot write to '{}'", out_path))?;
+        File::create(out_path).log_with_msg(|w| write!(w, "Cannot write to '{out_path}'"))?;
 
     // Skip the manifest signature
     reader.skip(manifest_sig_len as usize)?;
@@ -166,40 +164,18 @@ fn do_extract_boot_from_payload(
             }
             Type::REPLACE_BZ | Type::REPLACE_XZ => {
                 out_file.seek(SeekFrom::Start(out_offset))?;
-                if !ffi::decompress(data, out_file.as_raw_fd()) {
+                let fmt = check_fmt(data);
+
+                let mut decoder = get_decoder(fmt, Cursor::new(data));
+                let Ok(_): std::io::Result<()> = (try {
+                    std::io::copy(decoder.as_mut(), &mut out_file)?;
+                }) else {
                     return Err(bad_payload!("decompression failed"));
-                }
+                };
             }
             _ => return Err(bad_payload!("unsupported operation type")),
         };
     }
 
     Ok(())
-}
-
-pub fn extract_boot_from_payload(
-    in_path: *const c_char,
-    partition: *const c_char,
-    out_path: *const c_char,
-) -> bool {
-    fn inner(
-        in_path: *const c_char,
-        partition: *const c_char,
-        out_path: *const c_char,
-    ) -> LoggedResult<()> {
-        let in_path = unsafe { Utf8CStr::from_ptr(in_path) }?;
-        let partition = match unsafe { Utf8CStr::from_ptr(partition) } {
-            Ok(s) => Some(s),
-            Err(StrErr::NullPointerError) => None,
-            Err(e) => Err(e)?,
-        };
-        let out_path = match unsafe { Utf8CStr::from_ptr(out_path) } {
-            Ok(s) => Some(s),
-            Err(StrErr::NullPointerError) => None,
-            Err(e) => Err(e)?,
-        };
-        do_extract_boot_from_payload(in_path, partition, out_path)
-            .log_with_msg(|w| w.write_str("Failed to extract from payload"))
-    }
-    inner(in_path, partition, out_path).is_ok()
 }

@@ -1,7 +1,7 @@
 [package]
 name = "magiskpolicy"
-version = "0.0.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [lib]
 crate-type = ["staticlib", "rlib"]
@@ -10,6 +10,11 @@ path = "lib.rs"
 [build-dependencies]
 cxx-gen = { workspace = true }
 
+[features]
+default = ["main"]
+main = []
+
 [dependencies]
 base = { path = "../base" }
 cxx = { workspace = true }
+argh = { workspace = true }

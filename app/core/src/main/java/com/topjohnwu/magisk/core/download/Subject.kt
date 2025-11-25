@@ -8,7 +8,7 @@ import android.net.Uri
 import android.os.Parcelable
 import androidx.core.net.toUri
 import com.topjohnwu.magisk.core.Info
-import com.topjohnwu.magisk.core.model.MagiskJson
+import com.topjohnwu.magisk.core.model.UpdateInfo
 import com.topjohnwu.magisk.core.model.module.OnlineModule
 import com.topjohnwu.magisk.core.utils.MediaStoreUtils
 import com.topjohnwu.magisk.view.Notifications
@@ -17,7 +17,7 @@ import kotlinx.parcelize.Parcelize
 import java.io.File
 import java.util.UUID
 
-sealed class Subject : Parcelable {
+abstract class Subject : Parcelable {
 
     abstract val url: String
     abstract val file: Uri
@@ -27,29 +27,18 @@ sealed class Subject : Parcelable {
 
     open fun pendingIntent(context: Context): PendingIntent? = null
 
-    @Parcelize
-    class Module(
-        private val module: OnlineModule,
-        override val autoLaunch: Boolean,
-        override val notifyId: Int = Notifications.nextId()
-    ) : Subject() {
-        override val url: String get() = module.zipUrl
-        override val title: String get() = module.downloadFilename
-
-        @IgnoredOnParcel
-        override val file by lazy {
+    abstract class Module : Subject() {
+        abstract val module: OnlineModule
+        final override val url: String get() = module.zipUrl
+        final override val title: String get() = module.downloadFilename
+        final override val file by lazy {
             MediaStoreUtils.getFile(title).uri
         }
-
-        @IgnoredOnParcel
-        var piCreator: ((Context, Uri) -> PendingIntent)? = null
-
-        override fun pendingIntent(context: Context) = piCreator?.invoke(context, file)
     }
 
     @Parcelize
     class App(
-        private val json: MagiskJson = Info.remote.magisk,
+        private val json: UpdateInfo = Info.update,
         override val notifyId: Int = Notifications.nextId()
     ) : Subject() {
         override val title: String get() = "Magisk-${json.version}(${json.versionCode})"

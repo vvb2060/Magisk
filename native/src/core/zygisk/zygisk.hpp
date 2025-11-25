@@ -1,19 +1,10 @@
 #pragma once
 
-#include <sys/mman.h>
-#include <stdint.h>
 #include <jni.h>
-#include <vector>
 #include <core.hpp>
 
-namespace ZygiskRequest {
-enum : int {
-    GET_INFO,
-    CONNECT_COMPANION,
-    GET_MODDIR,
-    END
-};
-}
+#define ZYGISKLDR       "libzygisk.so"
+#define NBPROP          "ro.dalvik.vm.native.bridge"
 
 #if defined(__LP64__)
 #define ZLOGD(...) LOGD("zygisk64: " __VA_ARGS__)
@@ -28,20 +19,11 @@ enum : int {
 #endif
 
 // Extreme verbose logging
-#define ZLOGV(...) ZLOGD(__VA_ARGS__)
-//#define ZLOGV(...) (void*)0
+//#define ZLOGV(...) ZLOGD(__VA_ARGS__)
+#define ZLOGV(...) (void*)0
 
 void hook_entry();
 void hookJniNativeMethods(JNIEnv *env, const char *clz, JNINativeMethod *methods, int numMethods);
-
-int remote_get_info(int uid, const char *process, uint32_t *flags, std::vector<int> &fds);
-
-inline int zygisk_request(int req) {
-    int fd = connect_daemon(+RequestCode::ZYGISK);
-    if (fd < 0) return fd;
-    write_int(fd, req);
-    return fd;
-}
 
 // The reference of the following structs
 // https://cs.android.com/android/platform/superproject/main/+/main:art/libnativebridge/include/nativebridge/native_bridge.h

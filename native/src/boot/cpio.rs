@@ -4,37 +4,29 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::mem::size_of;
 use std::process::exit;
 use std::str;
 
 use argh::FromArgs;
-use bytemuck::{from_bytes, Pod, Zeroable};
+use bytemuck::{Pod, Zeroable, from_bytes};
 use num_traits::cast::AsPrimitive;
 use size::{Base, Size, Style};
 
+use crate::check_env;
+use crate::compress::{get_decoder, get_encoder};
+use crate::ffi::FileFormat;
+use crate::patch::{patch_encryption, patch_verity};
 use base::libc::{
-    c_char, dev_t, gid_t, major, makedev, minor, mknod, mode_t, uid_t, O_CLOEXEC, O_CREAT,
-    O_RDONLY, O_TRUNC, O_WRONLY, S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IRGRP,
-    S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, S_IXGRP, S_IXOTH, S_IXUSR,
+    S_IFBLK, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP,
+    S_IWOTH, S_IWUSR, S_IXGRP, S_IXOTH, S_IXUSR, dev_t, gid_t, major, makedev, minor, mknod,
+    mode_t, uid_t,
 };
 use base::{
-    log_err, map_args, BytesExt, EarlyExitExt, FsPath, LoggedResult, MappedFile, ResultExt,
-    Utf8CStr, Utf8CStrBufArr, Utf8CStrWrite, WriteExt,
+    BytesExt, EarlyExitExt, LoggedResult, MappedFile, OptionExt, ResultExt, Utf8CStr, Utf8CStrBuf,
+    WriteExt, cstr, log_err, nix::fcntl::OFlag,
 };
-
-use crate::check_env;
-use crate::ffi::{unxz, xz};
-use crate::patch::{patch_encryption, patch_verity};
-
-#[derive(FromArgs)]
-struct CpioCli {
-    #[argh(positional)]
-    file: String,
-    #[argh(positional)]
-    commands: Vec<String>,
-}
 
 #[derive(FromArgs)]
 struct CpioCommand {
@@ -150,7 +142,7 @@ struct List {
     recursive: bool,
 }
 
-fn print_cpio_usage() {
+pub(crate) fn print_cpio_usage() {
     eprintln!(
         r#"Usage: magiskboot cpio <incpio> [commands...]
 
@@ -175,9 +167,8 @@ Supported commands:
   extract [ENTRY OUT]
     Extract ENTRY to OUT, or extract all entries to current directory
   test
-    Test the cpio's status
-    Return value is 0 or bitwise or-ed of following values:
-    0x1:Magisk    0x2:unsupported
+    Test the cpio's status. Return values:
+    0:stock    1:Magisk    2:unsupported
   patch
     Apply ramdisk patches
     Configure with env variables: KEEPVERITY KEEPFORCEENCRYPT
@@ -235,7 +226,7 @@ impl Cpio {
             let hdr_sz = size_of::<CpioHeader>();
             let hdr = from_bytes::<CpioHeader>(&data[pos..(pos + hdr_sz)]);
             if &hdr.magic != b"070701" {
-                return Err(log_err!("invalid cpio magic"));
+                return log_err!("invalid cpio magic");
             }
             pos += hdr_sz;
             let name_sz = x8u(&hdr.namesize)? as usize;
@@ -269,13 +260,13 @@ impl Cpio {
     }
 
     fn load_from_file(path: &Utf8CStr) -> LoggedResult<Self> {
-        eprintln!("Loading cpio: [{}]", path);
+        eprintln!("Loading cpio: [{path}]");
         let file = MappedFile::open(path)?;
         Self::load_from_data(file.as_ref())
     }
 
     fn dump(&self, path: &str) -> LoggedResult<()> {
-        eprintln!("Dumping cpio: [{}]", path);
+        eprintln!("Dumping cpio: [{path}]");
         let mut file = File::create(path)?;
         let mut pos = 0usize;
         let mut inode = 300000i64;
@@ -309,7 +300,7 @@ impl Cpio {
         }
         pos += file.write(
             format!("070701{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}",
-                inode, 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0, 11, 0
+                    inode, 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0, 11, 0
             ).as_bytes()
         )?;
         pos += file.write("TRAILER!!!\0".as_bytes())?;
@@ -320,13 +311,13 @@ impl Cpio {
     fn rm(&mut self, path: &str, recursive: bool) {
         let path = norm_path(path);
         if self.entries.remove(&path).is_some() {
-            eprintln!("Removed entry [{}]", path);
+            eprintln!("Removed entry [{path}]");
         }
         if recursive {
             let path = path + "/";
             self.entries.retain(|k, _| {
                 if k.starts_with(&path) {
-                    eprintln!("Removed entry [{}]", k);
+                    eprintln!("Removed entry [{k}]");
                     false
                 } else {
                     true
@@ -339,17 +330,17 @@ impl Cpio {
         let entry = self
             .entries
             .get(path)
-            .ok_or_else(|| log_err!("No such file"))?;
-        eprintln!("Extracting entry [{}] to [{}]", path, out);
+            .ok_or_log_msg(|w| w.write_str("No such file"))?;
+        eprintln!("Extracting entry [{path}] to [{out}]");
 
         let out = Utf8CStr::from_string(out);
-        let out = FsPath::from(out);
 
-        let mut buf = Utf8CStrBufArr::default();
+        let mut buf = cstr::buf::default();
 
         // Make sure its parent directories exist
-        if out.parent(&mut buf) {
-            FsPath::from(&buf).mkdirs(0o755)?;
+        if let Some(dir) = out.parent_dir() {
+            buf.push_str(dir);
+            buf.mkdirs(0o755)?;
         }
 
         let mode: mode_t = (entry.mode & 0o777).into();
@@ -357,20 +348,23 @@ impl Cpio {
         match entry.mode & S_IFMT {
             S_IFDIR => out.mkdir(mode)?,
             S_IFREG => {
-                let mut file = out.create(O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, mode)?;
+                let mut file = out.create(
+                    OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_WRONLY | OFlag::O_CLOEXEC,
+                    mode,
+                )?;
                 file.write_all(&entry.data)?;
             }
             S_IFLNK => {
                 buf.clear();
                 buf.push_str(str::from_utf8(entry.data.as_slice())?);
-                FsPath::from(&buf).symlink_to(out)?;
+                out.create_symlink_to(&buf)?;
             }
             S_IFBLK | S_IFCHR => {
                 let dev = makedev(entry.rdevmajor.try_into()?, entry.rdevminor.try_into()?);
                 unsafe { mknod(out.as_ptr().cast(), entry.mode, dev) };
             }
             _ => {
-                return Err(log_err!("unknown entry type"));
+                return log_err!("unknown entry type");
             }
         }
         Ok(())
@@ -397,10 +391,9 @@ impl Cpio {
 
     fn add(&mut self, mode: mode_t, path: &str, file: &mut String) -> LoggedResult<()> {
         if path.ends_with('/') {
-            return Err(log_err!("path cannot end with / for add"));
+            return log_err!("path cannot end with / for add");
         }
         let file = Utf8CStr::from_string(file);
-        let file = FsPath::from(&file);
         let attr = file.get_attr()?;
 
         let mut content = Vec::<u8>::new();
@@ -411,17 +404,18 @@ impl Cpio {
         let mode = if attr.is_file() || attr.is_symlink() {
             rdevmajor = 0;
             rdevminor = 0;
-            file.open(O_RDONLY | O_CLOEXEC)?.read_to_end(&mut content)?;
+            file.open(OFlag::O_RDONLY | OFlag::O_CLOEXEC)?
+                .read_to_end(&mut content)?;
             mode | S_IFREG
         } else {
-            rdevmajor = unsafe { major(attr.st.st_rdev.as_()) }.as_();
-            rdevminor = unsafe { minor(attr.st.st_rdev.as_()) }.as_();
+            rdevmajor = major(attr.st.st_rdev.as_()).as_();
+            rdevminor = minor(attr.st.st_rdev.as_()).as_();
             if attr.is_block_device() {
                 mode | S_IFBLK
             } else if attr.is_char_device() {
                 mode | S_IFCHR
             } else {
-                return Err(log_err!("unsupported file type"));
+                return log_err!("unsupported file type");
             }
         };
 
@@ -436,7 +430,7 @@ impl Cpio {
                 data: content,
             }),
         );
-        eprintln!("Add file [{}] ({:04o})", path, mode);
+        eprintln!("Add file [{path}] ({mode:04o})");
         Ok(())
     }
 
@@ -452,7 +446,7 @@ impl Cpio {
                 data: vec![],
             }),
         );
-        eprintln!("Create directory [{}] ({:04o})", dir, mode);
+        eprintln!("Create directory [{dir}] ({mode:04o})");
     }
 
     fn ln(&mut self, src: &str, dst: &str) {
@@ -467,16 +461,16 @@ impl Cpio {
                 data: norm_path(src).as_bytes().to_vec(),
             }),
         );
-        eprintln!("Create symlink [{}] -> [{}]", dst, src);
+        eprintln!("Create symlink [{dst}] -> [{src}]");
     }
 
     fn mv(&mut self, from: &str, to: &str) -> LoggedResult<()> {
         let entry = self
             .entries
             .remove(&norm_path(from))
-            .ok_or_else(|| log_err!("no such entry {}", from))?;
+            .ok_or_log_msg(|w| w.write_fmt(format_args!("No such entry {from}")))?;
         self.entries.insert(norm_path(to), entry);
-        eprintln!("Move [{}] -> [{}]", from, to);
+        eprintln!("Move [{from}] -> [{to}]");
         Ok(())
     }
 
@@ -499,7 +493,7 @@ impl Cpio {
             if !recursive && !p.is_empty() && p.matches('/').count() > 1 {
                 continue;
             }
-            println!("{}\t{}", entry, name);
+            println!("{entry}\t{name}");
         }
     }
 }
@@ -512,8 +506,7 @@ impl Cpio {
         let keep_verity = check_env("KEEPVERITY");
         let keep_force_encrypt = check_env("KEEPFORCEENCRYPT");
         eprintln!(
-            "Patch with flag KEEPVERITY=[{}] KEEPFORCEENCRYPT=[{}]",
-            keep_verity, keep_force_encrypt
+            "Patch with flag KEEPVERITY=[{keep_verity}] KEEPFORCEENCRYPT=[{keep_force_encrypt}]"
         );
         self.entries.retain(|name, entry| {
             let fstab = (!keep_verity || !keep_force_encrypt)
@@ -524,7 +517,7 @@ impl Cpio {
                 && name.starts_with("fstab");
             if !keep_verity {
                 if fstab {
-                    eprintln!("Found fstab file [{}]", name);
+                    eprintln!("Found fstab file [{name}]");
                     let len = patch_verity(entry.data.as_mut_slice());
                     if len != entry.data.len() {
                         entry.data.resize(len, 0);
@@ -544,7 +537,6 @@ impl Cpio {
     }
 
     fn test(&self) -> i32 {
-        let mut ret = 0;
         for file in [
             "sbin/launch_daemonsu.sh",
             "sbin/su",
@@ -561,18 +553,17 @@ impl Cpio {
             "overlay/init.magisk.rc",
         ] {
             if self.exists(file) {
-                ret |= MAGISK_PATCHED;
-                break;
+                return MAGISK_PATCHED;
             }
         }
-        ret
+        0
     }
 
     fn restore(&mut self) -> LoggedResult<()> {
         let mut backups = HashMap::<String, Box<CpioEntry>>::new();
         let mut rm_list = String::new();
         self.entries
-            .extract_if(|name, _| name.starts_with(".backup/"))
+            .extract_if(.., |name, _| name.starts_with(".backup/"))
             .for_each(|(name, mut entry)| {
                 if name == ".backup/.rmlist" {
                     if let Ok(data) = str::from_utf8(&entry.data) {
@@ -584,7 +575,7 @@ impl Cpio {
                     } else {
                         &name[8..]
                     };
-                    eprintln!("Restore [{}] -> [{}]", name, new_name);
+                    eprintln!("Restore [{name}] -> [{new_name}]");
                     backups.insert(new_name.to_string(), entry);
                 }
             });
@@ -661,16 +652,16 @@ impl Cpio {
             match action {
                 Action::Backup(name, mut entry) => {
                     let backup = if !skip_compress && entry.compress() {
-                        format!(".backup/{}.xz", name)
+                        format!(".backup/{name}.xz")
                     } else {
-                        format!(".backup/{}", name)
+                        format!(".backup/{name}")
                     };
-                    eprintln!("Backup [{}] -> [{}]", name, backup);
+                    eprintln!("Backup [{name}] -> [{backup}]");
                     backups.insert(backup, entry);
                 }
                 Action::Record(name) => {
-                    eprintln!("Record new entry: [{}] -> [.backup/.rmlist]", name);
-                    rm_list.push_str(&format!("{}\0", name));
+                    eprintln!("Record new entry: [{name}] -> [.backup/.rmlist]");
+                    rm_list.push_str(&format!("{name}\0"));
                 }
                 Action::Noop => {}
             }
@@ -699,12 +690,16 @@ impl CpioEntry {
         if self.mode & S_IFMT != S_IFREG {
             return false;
         }
-        let mut compressed = Vec::new();
-        if !xz(&self.data, &mut compressed) {
+        let mut encoder = get_encoder(FileFormat::XZ, Vec::new());
+        let Ok(data): std::io::Result<Vec<u8>> = (try {
+            encoder.write_all(&self.data)?;
+            encoder.finish()?
+        }) else {
             eprintln!("xz compression failed");
             return false;
-        }
-        self.data = compressed;
+        };
+
+        self.data = data;
         true
     }
 
@@ -712,12 +707,18 @@ impl CpioEntry {
         if self.mode & S_IFMT != S_IFREG {
             return false;
         }
-        let mut decompressed = Vec::new();
-        if !unxz(&self.data, &mut decompressed) {
-            eprintln!("xz decompression failed");
+
+        let Ok(data): std::io::Result<Vec<u8>> = (try {
+            let mut decoder = get_decoder(FileFormat::XZ, Cursor::new(&self.data));
+            let mut data = Vec::new();
+            std::io::copy(decoder.as_mut(), &mut data)?;
+            data
+        }) else {
+            eprintln!("xz compression failed");
             return false;
-        }
-        self.data = decompressed;
+        };
+
+        self.data = data;
         true
     }
 }
@@ -749,84 +750,68 @@ impl Display for CpioEntry {
             Size::from_bytes(self.data.len())
                 .format()
                 .with_style(Style::Abbreviated)
-                .with_base(Base::Base10)
-                .to_string(),
+                .with_base(Base::Base10),
             self.rdevmajor,
             self.rdevminor,
         )
     }
 }
 
-pub fn cpio_commands(argc: i32, argv: *const *const c_char) -> bool {
-    fn inner(argc: i32, argv: *const *const c_char) -> LoggedResult<()> {
-        if argc < 1 {
-            return Err(log_err!("No arguments"));
+pub(crate) fn cpio_commands(file: &Utf8CStr, cmds: &Vec<String>) -> LoggedResult<()> {
+    let mut cpio = if file.exists() {
+        Cpio::load_from_file(file)?
+    } else {
+        Cpio::new()
+    };
+
+    for cmd in cmds {
+        if cmd.starts_with('#') {
+            continue;
         }
+        let mut cmd = CpioCommand::from_args(
+            &["magiskboot", "cpio", file],
+            cmd.split(' ')
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
+        .on_early_exit(print_cpio_usage);
 
-        let cmds = map_args(argc, argv)?;
-
-        let mut cli =
-            CpioCli::from_args(&["magiskboot", "cpio"], &cmds).on_early_exit(print_cpio_usage);
-
-        let file = Utf8CStr::from_string(&mut cli.file);
-        let mut cpio = if FsPath::from(file).exists() {
-            Cpio::load_from_file(file)?
-        } else {
-            Cpio::new()
-        };
-
-        for cmd in cli.commands {
-            if cmd.starts_with('#') {
-                continue;
+        match &mut cmd.action {
+            CpioAction::Test(_) => exit(cpio.test()),
+            CpioAction::Restore(_) => cpio.restore()?,
+            CpioAction::Patch(_) => cpio.patch(),
+            CpioAction::Exists(Exists { path }) => {
+                return if cpio.exists(path) {
+                    Ok(())
+                } else {
+                    log_err!()
+                };
             }
-            let mut cli = CpioCommand::from_args(
-                &["magiskboot", "cpio", file],
-                cmd.split(' ')
-                    .filter(|x| !x.is_empty())
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            )
-            .on_early_exit(print_cpio_usage);
-
-            match &mut cli.action {
-                CpioAction::Test(_) => exit(cpio.test()),
-                CpioAction::Restore(_) => cpio.restore()?,
-                CpioAction::Patch(_) => cpio.patch(),
-                CpioAction::Exists(Exists { path }) => {
-                    if cpio.exists(path) {
-                        exit(0);
-                    } else {
-                        exit(1);
-                    }
+            CpioAction::Backup(Backup {
+                origin,
+                skip_compress,
+            }) => cpio.backup(origin, *skip_compress)?,
+            CpioAction::Remove(Remove { path, recursive }) => cpio.rm(path, *recursive),
+            CpioAction::Move(Move { from, to }) => cpio.mv(from, to)?,
+            CpioAction::MakeDir(MakeDir { mode, dir }) => cpio.mkdir(*mode, dir),
+            CpioAction::Link(Link { src, dst }) => cpio.ln(src, dst),
+            CpioAction::Add(Add { mode, path, file }) => cpio.add(*mode, path, file)?,
+            CpioAction::Extract(Extract { paths }) => {
+                if !paths.is_empty() && paths.len() != 2 {
+                    log_err!("invalid arguments")?;
                 }
-                CpioAction::Backup(Backup {
-                    origin,
-                    skip_compress,
-                }) => cpio.backup(origin, *skip_compress)?,
-                CpioAction::Remove(Remove { path, recursive }) => cpio.rm(path, *recursive),
-                CpioAction::Move(Move { from, to }) => cpio.mv(from, to)?,
-                CpioAction::MakeDir(MakeDir { mode, dir }) => cpio.mkdir(*mode, dir),
-                CpioAction::Link(Link { src, dst }) => cpio.ln(src, dst),
-                CpioAction::Add(Add { mode, path, file }) => cpio.add(*mode, path, file)?,
-                CpioAction::Extract(Extract { paths }) => {
-                    if !paths.is_empty() && paths.len() != 2 {
-                        return Err(log_err!("invalid arguments"));
-                    }
-                    let mut it = paths.iter_mut();
-                    cpio.extract(it.next(), it.next())?;
-                }
-                CpioAction::List(List { path, recursive }) => {
-                    cpio.ls(path.as_str(), *recursive);
-                    exit(0);
-                }
-            };
-        }
-        cpio.dump(file)?;
-        Ok(())
+                let mut it = paths.iter_mut();
+                cpio.extract(it.next(), it.next())?;
+            }
+            CpioAction::List(List { path, recursive }) => {
+                cpio.ls(path.as_str(), *recursive);
+                return Ok(());
+            }
+        };
     }
-    inner(argc, argv)
-        .log_with_msg(|w| w.write_str("Failed to process cpio"))
-        .is_ok()
+    cpio.dump(file)?;
+    Ok(())
 }
 
 fn x8u(x: &[u8; 8]) -> LoggedResult<u32> {
@@ -834,7 +819,9 @@ fn x8u(x: &[u8; 8]) -> LoggedResult<u32> {
     let mut ret = 0u32;
     let s = str::from_utf8(x).log_with_msg(|w| w.write_str("bad cpio header"))?;
     for c in s.chars() {
-        ret = ret * 16 + c.to_digit(16).ok_or_else(|| log_err!("bad cpio header"))?;
+        ret = ret * 16
+            + c.to_digit(16)
+                .ok_or_log_msg(|w| w.write_str("bad cpio header"))?;
     }
     Ok(ret)
 }

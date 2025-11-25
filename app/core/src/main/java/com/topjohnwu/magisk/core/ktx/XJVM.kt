@@ -8,33 +8,25 @@ import kotlinx.coroutines.flow.flatMapMerge
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.lang.reflect.Field
-import java.text.DateFormat
-import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Collections
-import java.util.Locale
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 
-inline fun ZipInputStream.forEach(callback: (ZipEntry) -> Unit) {
-    var entry: ZipEntry? = nextEntry
-    while (entry != null) {
-        callback(entry)
-        entry = nextEntry
-    }
-}
-
-inline fun <In : InputStream, Out : OutputStream> withStreams(
-    inStream: In,
-    outStream: Out,
+inline fun <In : Closeable, Out : Closeable> withInOut(
+    input: In,
+    output: Out,
     withBoth: (In, Out) -> Unit
 ) {
-    inStream.use { reader ->
-        outStream.use { writer ->
+    input.use { reader ->
+        output.use { writer ->
             withBoth(reader, writer)
         }
     }
@@ -64,7 +56,7 @@ suspend inline fun InputStream.copyAndClose(
     out: OutputStream,
     bufferSize: Int = DEFAULT_BUFFER_SIZE,
     dispatcher: CoroutineDispatcher = Dispatchers.IO
-) = withStreams(this, out) { i, o -> i.copyAll(o, bufferSize, dispatcher) }
+) = withInOut(this, out) { i, o -> i.copyAll(o, bufferSize, dispatcher) }
 
 @Throws(IOException::class)
 suspend inline fun InputStream.writeTo(
@@ -92,19 +84,15 @@ inline fun <T, R> Flow<T>.concurrentMap(crossinline transform: suspend (T) -> R)
     }
 }
 
-fun Long.toTime(format: DateFormat) = format.format(this).orEmpty()
+fun Long.toTime(format: DateTimeFormatter): String = format.format(Instant.ofEpochMilli(this))
 
 // Some devices don't allow filenames containing ":"
-val timeFormatStandard by lazy {
-    SimpleDateFormat(
-        "yyyy-MM-dd'T'HH.mm.ss",
-        Locale.ROOT
-    )
+val timeFormatStandard: DateTimeFormatter by lazy {
+    DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH.mm.ss").withZone(ZoneId.systemDefault())
 }
-val timeDateFormat: DateFormat by lazy {
-    DateFormat.getDateTimeInstance(
-        DateFormat.DEFAULT,
-        DateFormat.DEFAULT,
-        Locale.ROOT
-    )
+val timeDateFormat: DateTimeFormatter by lazy {
+    DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withZone(ZoneId.systemDefault())
+}
+val dateFormat: DateTimeFormatter by lazy {
+    DateTimeFormatter.ofLocalizedDate(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
 }

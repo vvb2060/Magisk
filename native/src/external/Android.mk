@@ -23,121 +23,6 @@ LOCAL_SRC_FILES := \
     lz4/lib/xxhash.c
 include $(BUILD_STATIC_LIBRARY)
 
-# libbz2.a
-include $(CLEAR_VARS)
-LOCAL_MODULE := libbz2
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/bzip2
-LOCAL_EXPORT_C_INCLUDES := $(LOCAL_C_INCLUDES)
-LOCAL_SRC_FILES := \
-    bzip2/blocksort.c  \
-    bzip2/huffman.c    \
-    bzip2/crctable.c   \
-    bzip2/randtable.c  \
-    bzip2/compress.c   \
-    bzip2/decompress.c \
-    bzip2/bzlib.c
-include $(BUILD_STATIC_LIBRARY)
-
-# liblzma.a
-include $(CLEAR_VARS)
-LOCAL_MODULE := liblzma
-LOCAL_C_INCLUDES := \
-    $(LOCAL_PATH)/xz_config \
-    $(LOCAL_PATH)/xz/src/common \
-    $(LOCAL_PATH)/xz/src/liblzma/api \
-    $(LOCAL_PATH)/xz/src/liblzma/check \
-    $(LOCAL_PATH)/xz/src/liblzma/common \
-    $(LOCAL_PATH)/xz/src/liblzma/delta \
-    $(LOCAL_PATH)/xz/src/liblzma/lz \
-    $(LOCAL_PATH)/xz/src/liblzma/lzma \
-    $(LOCAL_PATH)/xz/src/liblzma/rangecoder \
-    $(LOCAL_PATH)/xz/src/liblzma/simple \
-    $(LOCAL_PATH)/xz/src/liblzma
-LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/xz/src/liblzma/api
-LOCAL_SRC_FILES := \
-    xz/src/common/tuklib_cpucores.c \
-    xz/src/common/tuklib_exit.c \
-    xz/src/common/tuklib_mbstr_fw.c \
-    xz/src/common/tuklib_mbstr_width.c \
-    xz/src/common/tuklib_open_stdxxx.c \
-    xz/src/common/tuklib_physmem.c \
-    xz/src/common/tuklib_progname.c \
-    xz/src/liblzma/check/check.c \
-    xz/src/liblzma/check/crc32_fast.c \
-    xz/src/liblzma/check/crc32_table.c \
-    xz/src/liblzma/check/crc64_fast.c \
-    xz/src/liblzma/check/crc64_table.c \
-    xz/src/liblzma/check/sha256.c \
-    xz/src/liblzma/common/alone_decoder.c \
-    xz/src/liblzma/common/alone_encoder.c \
-    xz/src/liblzma/common/auto_decoder.c \
-    xz/src/liblzma/common/block_buffer_decoder.c \
-    xz/src/liblzma/common/block_buffer_encoder.c \
-    xz/src/liblzma/common/block_decoder.c \
-    xz/src/liblzma/common/block_encoder.c \
-    xz/src/liblzma/common/block_header_decoder.c \
-    xz/src/liblzma/common/block_header_encoder.c \
-    xz/src/liblzma/common/block_util.c \
-    xz/src/liblzma/common/common.c \
-    xz/src/liblzma/common/easy_buffer_encoder.c \
-    xz/src/liblzma/common/easy_decoder_memusage.c \
-    xz/src/liblzma/common/easy_encoder.c \
-    xz/src/liblzma/common/easy_encoder_memusage.c \
-    xz/src/liblzma/common/easy_preset.c \
-    xz/src/liblzma/common/filter_buffer_decoder.c \
-    xz/src/liblzma/common/filter_buffer_encoder.c \
-    xz/src/liblzma/common/filter_common.c \
-    xz/src/liblzma/common/filter_decoder.c \
-    xz/src/liblzma/common/filter_encoder.c \
-    xz/src/liblzma/common/filter_flags_decoder.c \
-    xz/src/liblzma/common/filter_flags_encoder.c \
-    xz/src/liblzma/common/hardware_cputhreads.c \
-    xz/src/liblzma/common/hardware_physmem.c \
-    xz/src/liblzma/common/index.c \
-    xz/src/liblzma/common/index_decoder.c \
-    xz/src/liblzma/common/index_encoder.c \
-    xz/src/liblzma/common/index_hash.c \
-    xz/src/liblzma/common/outqueue.c \
-    xz/src/liblzma/common/stream_buffer_decoder.c \
-    xz/src/liblzma/common/stream_buffer_encoder.c \
-    xz/src/liblzma/common/stream_decoder.c \
-    xz/src/liblzma/common/stream_encoder.c \
-    xz/src/liblzma/common/stream_encoder_mt.c \
-    xz/src/liblzma/common/stream_flags_common.c \
-    xz/src/liblzma/common/stream_flags_decoder.c \
-    xz/src/liblzma/common/stream_flags_encoder.c \
-    xz/src/liblzma/common/vli_decoder.c \
-    xz/src/liblzma/common/vli_encoder.c \
-    xz/src/liblzma/common/vli_size.c \
-    xz/src/liblzma/delta/delta_common.c \
-    xz/src/liblzma/delta/delta_decoder.c \
-    xz/src/liblzma/delta/delta_encoder.c \
-    xz/src/liblzma/lz/lz_decoder.c \
-    xz/src/liblzma/lz/lz_encoder.c \
-    xz/src/liblzma/lz/lz_encoder_mf.c \
-    xz/src/liblzma/lzma/fastpos_table.c \
-    xz/src/liblzma/lzma/fastpos_tablegen.c \
-    xz/src/liblzma/lzma/lzma2_decoder.c \
-    xz/src/liblzma/lzma/lzma2_encoder.c \
-    xz/src/liblzma/lzma/lzma_decoder.c \
-    xz/src/liblzma/lzma/lzma_encoder.c \
-    xz/src/liblzma/lzma/lzma_encoder_optimum_fast.c \
-    xz/src/liblzma/lzma/lzma_encoder_optimum_normal.c \
-    xz/src/liblzma/lzma/lzma_encoder_presets.c \
-    xz/src/liblzma/rangecoder/price_table.c \
-    xz/src/liblzma/rangecoder/price_tablegen.c \
-    xz/src/liblzma/simple/arm.c \
-    xz/src/liblzma/simple/armthumb.c \
-    xz/src/liblzma/simple/ia64.c \
-    xz/src/liblzma/simple/powerpc.c \
-    xz/src/liblzma/simple/simple_coder.c \
-    xz/src/liblzma/simple/simple_decoder.c \
-    xz/src/liblzma/simple/simple_encoder.c \
-    xz/src/liblzma/simple/sparc.c \
-    xz/src/liblzma/simple/x86.c
-LOCAL_CFLAGS := -DHAVE_CONFIG_H -Wno-implicit-function-declaration
-include $(BUILD_STATIC_LIBRARY)
-
 SE_PATH := $(LOCAL_PATH)/selinux
 
 # libsepol.a
@@ -196,6 +81,7 @@ LOCAL_SRC_FILES := \
     selinux/libsepol/cil/src/cil_binary.c \
     selinux/libsepol/cil/src/cil_build_ast.c \
     selinux/libsepol/cil/src/cil_copy_ast.c \
+    selinux/libsepol/cil/src/cil_deny.c \
     selinux/libsepol/cil/src/cil_find.c \
     selinux/libsepol/cil/src/cil_fqn.c \
     selinux/libsepol/cil/src/cil_lexer.c \
@@ -231,54 +117,6 @@ LOCAL_STATIC_LIBRARIES := libcxx
 LOCAL_SRC_FILES := \
     lsplt/lsplt/src/main/jni/elf_util.cc \
     lsplt/lsplt/src/main/jni/lsplt.cc
-include $(BUILD_STATIC_LIBRARY)
-
-# libz.a
-include $(CLEAR_VARS)
-LOCAL_MODULE:= libz
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/zlib
-LOCAL_EXPORT_C_INCLUDES := $(LOCAL_C_INCLUDES)
-LOCAL_CFLAGS := \
-    -DHAVE_HIDDEN -DZLIB_CONST -Wall -Werror \
-    -Wno-unused -Wno-unused-parameter -Wno-deprecated-non-prototype
-LOCAL_SRC_FILES := \
-    zlib/adler32.c \
-    zlib/compress.c \
-    zlib/cpu_features.c \
-    zlib/crc32.c \
-    zlib/deflate.c \
-    zlib/gzclose.c \
-    zlib/gzlib.c \
-    zlib/gzread.c \
-    zlib/gzwrite.c \
-    zlib/infback.c \
-    zlib/inffast.c \
-    zlib/inflate.c \
-    zlib/inftrees.c \
-    zlib/trees.c \
-    zlib/uncompr.c \
-    zlib/zutil.c
-include $(BUILD_STATIC_LIBRARY)
-
-# libzopfli.a
-include $(CLEAR_VARS)
-LOCAL_MODULE:= libzopfli
-LOCAL_C_INCLUDES := $(LOCAL_PATH)/zopfli/src
-LOCAL_EXPORT_C_INCLUDES := $(LOCAL_C_INCLUDES)
-LOCAL_CFLAGS := -Wall -Werror -Wno-unused -Wno-unused-parameter
-LOCAL_SRC_FILES := \
-    zopfli/src/zopfli/blocksplitter.c \
-    zopfli/src/zopfli/cache.c \
-    zopfli/src/zopfli/deflate.c \
-    zopfli/src/zopfli/gzip_container.c \
-    zopfli/src/zopfli/hash.c \
-    zopfli/src/zopfli/katajainen.c \
-    zopfli/src/zopfli/lz77.c \
-    zopfli/src/zopfli/squeeze.c \
-    zopfli/src/zopfli/tree.c \
-    zopfli/src/zopfli/util.c \
-    zopfli/src/zopfli/zlib_container.c \
-    zopfli/src/zopfli/zopfli_lib.c
 include $(BUILD_STATIC_LIBRARY)
 
 CWD := $(LOCAL_PATH)

@@ -62,7 +62,7 @@ class SuRequestHandler(
             return false
         }
         output = File(fifo)
-        policy = SuPolicy(uid)
+        policy = policyDB.fetch(uid) ?: SuPolicy(uid)
         try {
             pkgInfo = pm.getPackageInfo(uid, pid) ?: PackageInfo().apply {
                 val name = pm.getNameForUid(uid) ?: throw PackageManager.NameNotFoundException()
@@ -81,15 +81,17 @@ class SuRequestHandler(
         return true
     }
 
-    suspend fun respond(action: Int, time: Int) {
-        val until = if (time > 0)
-            TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()) +
-                TimeUnit.MINUTES.toSeconds(time.toLong())
-        else
-            time.toLong()
-
-        policy.policy = action
-        policy.until = until
+    suspend fun respond(action: Int, time: Long) {
+        if (action == SuPolicy.ALLOW && Config.suRestrict) {
+            policy.policy = SuPolicy.RESTRICT
+        } else {
+            policy.policy = action
+        }
+        if (time >= 0) {
+            policy.remain = TimeUnit.MINUTES.toSeconds(time)
+        } else {
+            policy.remain = time
+        }
 
         withContext(Dispatchers.IO) {
             try {
@@ -100,7 +102,7 @@ class SuRequestHandler(
             } catch (e: IOException) {
                 Timber.e(e)
             }
-            if (until >= 0) {
+            if (time >= 0) {
                 policyDB.update(policy)
             }
         }

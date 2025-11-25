@@ -207,7 +207,7 @@ find_block() {
   for BLOCK in "$@"; do
     DEVICE=$(find /dev/block \( -type b -o -type c -o -type l \) -iname $BLOCK | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
+      echo $DEVICE
       return 0
     fi
   done
@@ -226,7 +226,7 @@ find_block() {
   for DEV in "$@"; do
     DEVICE=$(find /dev \( -type b -o -type c -o -type l \) -maxdepth 1 -iname $DEV | head -n 1) 2>/dev/null
     if [ ! -z $DEVICE ]; then
-      readlink -f $DEVICE
+      echo $DEVICE
       return 0
     fi
   done
@@ -325,7 +325,7 @@ mount_partitions() {
 
 # After calling this method, the following variables will be set:
 # ISENCRYPTED, PATCHVBMETAFLAG,
-# KEEPVERITY, KEEPFORCEENCRYPT, RECOVERYMODE
+# KEEPVERITY, KEEPFORCEENCRYPT, RECOVERYMODE, VENDORBOOT
 get_flags() {
   if grep ' /data ' /proc/mounts | grep -q 'dm-'; then
     ISENCRYPTED=true
@@ -348,6 +348,7 @@ get_flags() {
   getvar KEEPVERITY
   getvar KEEPFORCEENCRYPT
   getvar RECOVERYMODE
+  getvar VENDORBOOT
   if [ -z $KEEPVERITY ]; then
     if $SYSTEM_AS_ROOT; then
       KEEPVERITY=true
@@ -365,19 +366,29 @@ get_flags() {
     fi
   fi
   [ -z $RECOVERYMODE ] && RECOVERYMODE=false
+  [ -z $VENDORBOOT ] && VENDORBOOT=false
 }
 
+# Returns whether the device is GKI 13+
+is_gt_gki_13() {
+  [ "$(uname -r | cut -d. -f1)" -ge 5 ] && uname -r | grep -Evq "android12-|^5\.4"
+}
+
+# Require RECOVERYMODE, VENDORBOOT, SLOT to be set.
+# After calling this method, BOOTIMAGE will be set.
 find_boot_image() {
   BOOTIMAGE=
-  if $RECOVERYMODE; then
+  if $VENDORBOOT; then
+    BOOTIMAGE="/dev/block/by-name/vendor_boot$SLOT"
+  elif $RECOVERYMODE; then
     BOOTIMAGE=$(find_block "recovery$SLOT" "sos")
-  elif [ -L "/dev/block/by-name/init_boot$SLOT" ] && uname -r | grep -vq "android12-"; then
+  elif [ -e "/dev/block/by-name/init_boot$SLOT" ] && is_gt_gki_13; then
     # init_boot is only used with GKI 13+. It is possible that some devices with init_boot
-    # partition still uses Android 12 GKI, so we need to explicitly detect that scenario.
-    BOOTIMAGE=$(readlink -f "/dev/block/by-name/init_boot$SLOT")
-  elif [ -L "/dev/block/by-name/boot$SLOT" ]; then
+    # partition still uses Android 12 GKI or previous kernels, so we need to explicitly detect that scenario.
+    BOOTIMAGE="/dev/block/by-name/init_boot$SLOT"
+  elif [ -e "/dev/block/by-name/boot$SLOT" ]; then
     # Standard location since AOSP Android 10+
-    BOOTIMAGE=$(readlink -f "/dev/block/by-name/boot$SLOT")
+    BOOTIMAGE="/dev/block/by-name/boot$SLOT"
   elif [ -n "$SLOT" ]; then
     # Fallback for A/B devices running < Android 10
     BOOTIMAGE=$(find_block "ramdisk$SLOT" "boot$SLOT")
@@ -530,7 +541,7 @@ check_data() {
 }
 
 run_migrations() {
-  local LOCSHA1
+  local SHA1
   local TARGET
   # Legacy app installation
   local BACKUP=$MAGISKBIN/stock_boot*.gz
@@ -542,22 +553,23 @@ run_migrations() {
   # Legacy backup
   for gz in /data/stock_boot*.gz; do
     [ -f $gz ] || break
-    LOCSHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
-    [ -z $LOCSHA1 ] && break
-    mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
-    mv $gz /data/magisk_backup_${LOCSHA1}/boot.img.gz
+    SHA1=$(basename $gz | sed -e 's/stock_boot_//' -e 's/.img.gz//')
+    [ -z $SHA1 ] && break
+    mkdir /data/magisk_backup_${SHA1} 2>/dev/null
+    mv $gz /data/magisk_backup_${SHA1}/boot.img.gz
   done
 
   # Stock backups
-  LOCSHA1=$SHA1
+  SHA1=
   for name in boot dtb dtbo dtbs; do
     BACKUP=$MAGISKBIN/stock_${name}.img
     [ -f $BACKUP ] || continue
     if [ $name = 'boot' ]; then
-      LOCSHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
-      mkdir /data/magisk_backup_${LOCSHA1} 2>/dev/null
+      SHA1=$($MAGISKBIN/magiskboot sha1 $BACKUP)
+      mkdir /data/magisk_backup_${SHA1} 2>/dev/null
     fi
-    TARGET=/data/magisk_backup_${LOCSHA1}/${name}.img
+    [ -z $SHA1 ] && break
+    TARGET=/data/magisk_backup_${SHA1}/${name}.img
     cp $BACKUP $TARGET
     rm -f $BACKUP
     gzip -9f $TARGET
@@ -620,6 +632,15 @@ is_legacy_script() {
   return $?
 }
 
+# $1 = MODPATH
+set_default_perm() {
+  set_perm_recursive $1 0 0 0755 0644
+  set_perm_recursive $1/system/bin 0 2000 0755 0755
+  set_perm_recursive $1/system/xbin 0 2000 0755 0755
+  set_perm_recursive $1/system/system_ext/bin 0 2000 0755 0755
+  set_perm_recursive $1/system/vendor/bin 0 2000 0755 0755 u:object_r:vendor_file:s0
+}
+
 # Require OUTFD, ZIPFILE to be set
 install_module() {
   rm -rf $TMPDIR
@@ -640,7 +661,7 @@ install_module() {
 
   # Extract prop file
   unzip -o "$ZIPFILE" module.prop -d $TMPDIR >&2
-  [ ! -f $TMPDIR/module.prop ] && abort "! Unable to extract zip file!"
+  [ ! -f $TMPDIR/module.prop ] && abort "! This zip is not a Magisk module!"
 
   local MODDIRNAME=modules
   $BOOTMODE && MODDIRNAME=modules_update
@@ -653,6 +674,7 @@ install_module() {
   # Create mod paths
   rm -rf $MODPATH
   mkdir -p $MODPATH
+  chcon u:object_r:system_file:s0 $MODPATH
 
   if is_legacy_script; then
     unzip -oj "$ZIPFILE" module.prop install.sh uninstall.sh 'common/*' -d $TMPDIR >&2
@@ -682,13 +704,7 @@ install_module() {
     if ! grep -q '^SKIPUNZIP=1$' $MODPATH/customize.sh 2>/dev/null; then
       ui_print "- Extracting module files"
       unzip -o "$ZIPFILE" -x 'META-INF/*' -d $MODPATH >&2
-
-      # Default permissions
-      set_perm_recursive $MODPATH 0 0 0755 0644
-      set_perm_recursive $MODPATH/system/bin 0 2000 0755 0755
-      set_perm_recursive $MODPATH/system/xbin 0 2000 0755 0755
-      set_perm_recursive $MODPATH/system/system_ext/bin 0 2000 0755 0755
-      set_perm_recursive $MODPATH/system/vendor/bin 0 2000 0755 0755 u:object_r:vendor_file:s0
+      set_default_perm $MODPATH
     fi
 
     # Load customization script
@@ -699,6 +715,12 @@ install_module() {
   for TARGET in $REPLACE; do
     ui_print "- Replace target: $TARGET"
     mktouch $MODPATH$TARGET/.replace
+  done
+
+  for TARGET in $REMOVE; do
+    ui_print "- Remove target: $TARGET"
+    mkdir -p $(dirname $MODPATH$TARGET) 2>/dev/null
+    mknod $MODPATH$TARGET c 0 0
   done
 
   if $BOOTMODE; then

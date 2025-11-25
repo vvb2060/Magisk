@@ -6,7 +6,6 @@ import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import android.system.OsConstants.O_WRONLY
-import android.widget.Toast
 import androidx.annotation.WorkerThread
 import androidx.core.os.postDelayed
 import com.topjohnwu.magisk.StubApk
@@ -15,13 +14,9 @@ import com.topjohnwu.magisk.core.BuildConfig
 import com.topjohnwu.magisk.core.Config
 import com.topjohnwu.magisk.core.Const
 import com.topjohnwu.magisk.core.Info
-import com.topjohnwu.magisk.core.R
 import com.topjohnwu.magisk.core.di.ServiceLocator
 import com.topjohnwu.magisk.core.isRunningAsStub
 import com.topjohnwu.magisk.core.ktx.copyAll
-import com.topjohnwu.magisk.core.ktx.copyAndClose
-import com.topjohnwu.magisk.core.ktx.reboot
-import com.topjohnwu.magisk.core.ktx.toast
 import com.topjohnwu.magisk.core.ktx.writeTo
 import com.topjohnwu.magisk.core.utils.DummyList
 import com.topjohnwu.magisk.core.utils.MediaStoreUtils
@@ -51,7 +46,6 @@ import java.io.OutputStream
 import java.io.PushbackInputStream
 import java.nio.ByteBuffer
 import java.security.SecureRandom
-import java.util.Arrays
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -87,10 +81,12 @@ abstract class MagiskInstallImpl protected constructor(
     }
 
     private fun findImage(slot: String): Boolean {
-        val bootPath = (
-            "(RECOVERYMODE=${Config.recovery} " +
-            "SLOT=$slot find_boot_image; " +
-            "echo \$BOOTIMAGE)").fsh()
+        val cmd =
+            "RECOVERYMODE=${Config.recovery} " +
+            "VENDORBOOT=${Info.isVendorBoot} " +
+            "SLOT=$slot " +
+            "find_boot_image; echo \$BOOTIMAGE"
+        val bootPath = ("($cmd)").fsh()
         if (bootPath.isEmpty()) {
             console.add("! Unable to detect target image")
             return false
@@ -138,7 +134,6 @@ abstract class MagiskInstallImpl protected constructor(
                         if (entry != null) {
                             val magisk32 = File(installDir, "magisk32")
                             zf.getInputStream(entry).writeTo(magisk32)
-                            magisk32.setExecutable(true)
                         }
                     }
                 }
@@ -153,11 +148,15 @@ abstract class MagiskInstallImpl protected constructor(
                     Os.symlink(lib.path, "$installDir/$name")
                 }
 
-                // Also symlink magisk32 on 64-bit devices that supports 32-bit
-                val lib32 = info.javaClass.getDeclaredField("secondaryNativeLibraryDir")
-                    .get(info) as String?
-                if (lib32 != null) {
-                    Os.symlink("$lib32/libmagisk.so", "$installDir/magisk32");
+                // Also extract magisk32 on 64-bit devices that supports 32-bit
+                val abi32 = Const.CPU_ABI_32
+                if (Process.is64Bit() && abi32 != null) {
+                    val name = "lib/$abi32/libmagisk.so"
+                    val entry = javaClass.classLoader!!.getResourceAsStream(name)
+                    if (entry != null) {
+                        val magisk32 = File(installDir, "magisk32")
+                        entry.writeTo(magisk32)
+                    }
                 }
             }
 
@@ -195,7 +194,8 @@ abstract class MagiskInstallImpl protected constructor(
         return true
     }
 
-    private suspend fun InputStream.copyAndCloseOut(out: OutputStream) = out.use { copyAll(it) }
+    private suspend fun InputStream.copyAndCloseOut(out: OutputStream) =
+        out.use { copyAll(it, 1024 * 1024) }
 
     private class NoAvailableStream(s: InputStream) : FilterInputStream(s) {
         // Make sure available is never called on the actual stream and always return 0
@@ -229,8 +229,8 @@ abstract class MagiskInstallImpl protected constructor(
         console.add("- Processing tar file")
         var entry: TarArchiveEntry? = tarIn.nextEntry
 
-        fun TarArchiveEntry.decompressedStream(): InputStream {
-            val stream = if (name.endsWith(".lz4"))
+        fun decompressedStream(): InputStream {
+            val stream = if (tarIn.currentEntry.name.endsWith(".lz4"))
                 FramedLZ4CompressorInputStream(tarIn, true) else tarIn
             return NoAvailableStream(stream)
         }
@@ -256,9 +256,9 @@ abstract class MagiskInstallImpl protected constructor(
 
             if (bootItem != null) {
                 console.add("-- Extracting: ${bootItem.name}")
-                entry.decompressedStream().copyAndCloseOut(bootItem.file.newOutputStream())
+                decompressedStream().copyAndCloseOut(bootItem.file.newOutputStream())
             } else if (entry.name.contains("vbmeta.img")) {
-                val rawData = entry.decompressedStream().readBytes()
+                val rawData = decompressedStream().readBytes()
                 // Valid vbmeta.img should be at least 256 bytes
                 if (rawData.size < 256)
                     continue
@@ -291,7 +291,7 @@ abstract class MagiskInstallImpl protected constructor(
             } else {
                 console.add("-- Copying   : ${entry.name}")
                 tarOut.putArchiveEntry(entry)
-                tarIn.copyAll(tarOut, bufferSize = 1024 * 1024)
+                tarIn.copyAll(tarOut)
                 tarOut.closeArchiveEntry()
             }
             entry = tarIn.nextEntry ?: break
@@ -433,7 +433,7 @@ abstract class MagiskInstallImpl protected constructor(
 
         // Process input file
         try {
-            PushbackInputStream(uri.inputStream(), 512).use { src ->
+            PushbackInputStream(uri.inputStream().buffered(1024 * 1024), 512).use { src ->
                 val head = ByteArray(512)
                 if (src.read(head) != head.size) {
                     console.add("! Invalid input file")
@@ -442,12 +442,13 @@ abstract class MagiskInstallImpl protected constructor(
                 src.unread(head)
 
                 val magic = head.copyOf(4)
-                val tarMagic = Arrays.copyOfRange(head, 257, 262)
+                val tarMagic = head.copyOfRange(257, 262)
 
                 srcBoot = if (tarMagic.contentEquals("ustar".toByteArray())) {
                     // tar file
                     outFile = MediaStoreUtils.getFile("$destName.tar")
-                    outStream = TarArchiveOutputStream(outFile.uri.outputStream()).also {
+                    val os = outFile.uri.outputStream().buffered(1024 * 1024)
+                    outStream = TarArchiveOutputStream(os).also {
                         it.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_STAR)
                         it.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU)
                     }
@@ -504,7 +505,7 @@ abstract class MagiskInstallImpl protected constructor(
                 bootItem.file = newBoot
                 bootItem.copyTo(outStream as TarArchiveOutputStream)
             } else {
-                newBoot.newInputStream().copyAndClose(outStream)
+                newBoot.newInputStream().use { it.copyAll(outStream, 1024 * 1024) }
             }
             newBoot.delete()
 
@@ -518,6 +519,8 @@ abstract class MagiskInstallImpl protected constructor(
             outFile.delete()
             Timber.e(e)
             return false
+        } finally {
+            outStream.close()
         }
 
         // Fix up binaries
@@ -585,6 +588,8 @@ abstract class MagiskInstallImpl protected constructor(
 
     protected suspend fun fixEnv() = extractFiles() && "fix_env $installDir".sh().isSuccess
 
+    protected fun restore() = findImage() && "restore_imgs $srcBoot".sh().isSuccess
+
     protected fun uninstall() = "run_uninstaller $AppApkPath".sh().isSuccess
 
     @WorkerThread
@@ -599,7 +604,9 @@ abstract class MagiskInstallImpl protected constructor(
         if (result)
             return true
 
-        Shell.cmd("rm -rf $installDir").submit()
+        // Not every operation initializes installDir
+        if (::installDir.isInitialized)
+            Shell.cmd("rm -rf $installDir").submit()
         return false
     }
 
@@ -608,11 +615,10 @@ abstract class MagiskInstallImpl protected constructor(
     }
 }
 
-abstract class MagiskInstaller(
+abstract class ConsoleInstaller(
     console: MutableList<String>,
     logs: MutableList<String>
 ) : MagiskInstallImpl(console, logs) {
-
     override suspend fun exec(): Boolean {
         val success = super.exec()
         if (success) {
@@ -622,40 +628,51 @@ abstract class MagiskInstaller(
         }
         return success
     }
+}
+
+abstract class CallBackInstaller : MagiskInstallImpl(DummyList, DummyList) {
+    suspend fun exec(callback: (Boolean) -> Unit): Boolean {
+        val success = exec()
+        callback(success)
+        return success
+    }
+}
+
+class MagiskInstaller {
 
     class Patch(
         private val uri: Uri,
         console: MutableList<String>,
         logs: MutableList<String>
-    ) : MagiskInstaller(console, logs) {
+    ) : ConsoleInstaller(console, logs) {
         override suspend fun operations() = patchFile(uri)
     }
 
     class SecondSlot(
         console: MutableList<String>,
         logs: MutableList<String>
-    ) : MagiskInstaller(console, logs) {
+    ) : ConsoleInstaller(console, logs) {
         override suspend fun operations() = secondSlot()
     }
 
     class Direct(
         console: MutableList<String>,
         logs: MutableList<String>
-    ) : MagiskInstaller(console, logs) {
+    ) : ConsoleInstaller(console, logs) {
         override suspend fun operations() = direct()
     }
 
     class Emulator(
         console: MutableList<String>,
         logs: MutableList<String>
-    ) : MagiskInstaller(console, logs) {
+    ) : ConsoleInstaller(console, logs) {
         override suspend fun operations() = fixEnv()
     }
 
     class Uninstall(
         console: MutableList<String>,
         logs: MutableList<String>
-    ) : MagiskInstallImpl(console, logs) {
+    ) : ConsoleInstaller(console, logs) {
         override suspend fun operations() = uninstall()
 
         override suspend fun exec(): Boolean {
@@ -669,19 +686,11 @@ abstract class MagiskInstaller(
         }
     }
 
-    class FixEnv(private val callback: () -> Unit) : MagiskInstallImpl(DummyList, DummyList) {
-        override suspend fun operations() = fixEnv()
+    class Restore : CallBackInstaller() {
+        override suspend fun operations() = restore()
+    }
 
-        override suspend fun exec(): Boolean {
-            val success = super.exec()
-            callback()
-            context.toast(
-                if (success) R.string.reboot_delay_toast else R.string.setup_fail,
-                Toast.LENGTH_LONG
-            )
-            if (success)
-                UiThreadHandler.handler.postDelayed(5000) { reboot() }
-            return success
-        }
+    class FixEnv : CallBackInstaller() {
+        override suspend fun operations() = fixEnv()
     }
 }

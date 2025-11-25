@@ -1,28 +1,18 @@
-use std::{cell::UnsafeCell, process::exit};
+use std::cell::UnsafeCell;
 
 use argh::FromArgs;
 use fdt::{
+    Fdt, FdtError,
     node::{FdtNode, NodeProperty},
-    Fdt,
 };
 
-use base::{
-    libc::c_char, log_err, map_args, EarlyExitExt, LoggedResult, MappedFile, ResultExt, Utf8CStr,
-};
+use base::{LoggedResult, MappedFile, Utf8CStr};
 
 use crate::{check_env, patch::patch_verity};
 
 #[derive(FromArgs)]
-struct DtbCli {
-    #[argh(positional)]
-    file: String,
-    #[argh(subcommand)]
-    action: DtbAction,
-}
-
-#[derive(FromArgs)]
 #[argh(subcommand)]
-enum DtbAction {
+pub(crate) enum DtbAction {
     Print(Print),
     Patch(Patch),
     Test(Test),
@@ -30,20 +20,20 @@ enum DtbAction {
 
 #[derive(FromArgs)]
 #[argh(subcommand, name = "print")]
-struct Print {
+pub(crate) struct Print {
     #[argh(switch, short = 'f')]
     fstab: bool,
 }
 
 #[derive(FromArgs)]
 #[argh(subcommand, name = "patch")]
-struct Patch {}
+pub(crate) struct Patch {}
 
 #[derive(FromArgs)]
 #[argh(subcommand, name = "test")]
-struct Test {}
+pub(crate) struct Test {}
 
-fn print_dtb_usage() {
+pub(crate) fn print_dtb_usage() {
     eprintln!(
         r#"Usage: magiskboot dtb <file> <action> [args...]
 Do dtb related actions to <file>.
@@ -131,9 +121,9 @@ fn print_node(node: &FdtNode) {
                     }
                 );
             } else if size > MAX_PRINT_LEN {
-                println!("[{}]: <bytes>({})", name, size);
+                println!("[{name}]: <bytes>({size})");
             } else {
-                println!("[{}]: {:02x?}", name, value);
+                println!("[{name}]: {value:02x?}");
             }
         }
 
@@ -154,7 +144,7 @@ fn for_each_fdt<F: FnMut(usize, Fdt) -> LoggedResult<()>>(
     rw: bool,
     mut f: F,
 ) -> LoggedResult<()> {
-    eprintln!("Loading dtbs from [{}]", file);
+    eprintln!("Loading dtbs from [{file}]");
     let file = if rw {
         MappedFile::open_rw(file)?
     } else {
@@ -171,14 +161,16 @@ fn for_each_fdt<F: FnMut(usize, Fdt) -> LoggedResult<()>>(
         if slice.len() < 40 {
             break;
         }
-        let fdt = Fdt::new(slice)?;
+        let fdt = match Fdt::new(slice) {
+            Err(FdtError::BufferTooSmall) => {
+                eprintln!("dtb.{dtb_num:04} is truncated");
+                break;
+            }
+            Ok(fdt) => fdt,
+            e => e?,
+        };
 
         let size = fdt.total_size();
-
-        if size > slice.len() {
-            eprintln!("dtb.{:04} is truncated", dtb_num);
-            break;
-        }
 
         f(dtb_num, fdt)?;
 
@@ -196,11 +188,11 @@ fn dtb_print(file: &Utf8CStr, fstab: bool) -> LoggedResult<()> {
     for_each_fdt(file, false, |n, fdt| {
         if fstab {
             if let Some(fstab) = find_fstab(&fdt) {
-                eprintln!("Found fstab in dtb.{:04}", n);
+                eprintln!("Found fstab in dtb.{n:04}");
                 print_node(&fstab);
             }
         } else if let Some(mut root) = fdt.find_node("/") {
-            eprintln!("Printing dtb.{:04}", n);
+            eprintln!("Printing dtb.{n:04}");
             if root.name.is_empty() {
                 root.name = "/";
             }
@@ -218,11 +210,11 @@ fn dtb_test(file: &Utf8CStr) -> LoggedResult<bool> {
                 if child.name != "system" {
                     continue;
                 }
-                if let Some(mount_point) = child.property("mnt_point") {
-                    if mount_point.value == b"/system_root\0" {
-                        ret = false;
-                        break;
-                    }
+                if let Some(mount_point) = child.property("mnt_point")
+                    && mount_point.value == b"/system_root\0"
+                {
+                    ret = false;
+                    break;
                 }
             }
         }
@@ -246,7 +238,7 @@ fn dtb_patch(file: &Utf8CStr) -> LoggedResult<bool> {
                             &mut *std::mem::transmute::<&[u8], &UnsafeCell<[u8]>>(w).get()
                         };
                         w[..=4].copy_from_slice(b"want");
-                        eprintln!("Patch [skip_initramfs] -> [want_initramfs] in dtb.{:04}", n);
+                        eprintln!("Patch [skip_initramfs] -> [want_initramfs] in dtb.{n:04}");
                         patched = true;
                     }
                 });
@@ -272,36 +264,13 @@ fn dtb_patch(file: &Utf8CStr) -> LoggedResult<bool> {
     Ok(patched)
 }
 
-pub fn dtb_commands(argc: i32, argv: *const *const c_char) -> bool {
-    fn inner(argc: i32, argv: *const *const c_char) -> LoggedResult<()> {
-        if argc < 1 {
-            return Err(log_err!("No arguments"));
+pub(crate) fn dtb_commands(file: &Utf8CStr, action: &DtbAction) -> LoggedResult<bool> {
+    match action {
+        DtbAction::Print(Print { fstab }) => {
+            dtb_print(file, *fstab)?;
+            Ok(true)
         }
-        let cmds = map_args(argc, argv)?;
-
-        let mut cli =
-            DtbCli::from_args(&["magiskboot", "dtb"], &cmds).on_early_exit(print_dtb_usage);
-
-        let file = Utf8CStr::from_string(&mut cli.file);
-
-        match cli.action {
-            DtbAction::Print(Print { fstab }) => {
-                dtb_print(file, fstab)?;
-            }
-            DtbAction::Test(_) => {
-                if !dtb_test(file)? {
-                    exit(1);
-                }
-            }
-            DtbAction::Patch(_) => {
-                if !dtb_patch(file)? {
-                    exit(1);
-                }
-            }
-        }
-        Ok(())
+        DtbAction::Test(_) => Ok(dtb_test(file)?),
+        DtbAction::Patch(_) => Ok(dtb_patch(file)?),
     }
-    inner(argc, argv)
-        .log_with_msg(|w| w.write_str("Failed to process dtb"))
-        .is_ok()
 }
