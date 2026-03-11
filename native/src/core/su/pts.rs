@@ -1,13 +1,11 @@
 use base::{FileOrStd, LibcReturn, LoggedResult, OsResult, ResultExt, libc, warn};
 use libc::{STDIN_FILENO, TIOCGWINSZ, TIOCSWINSZ, c_int, winsize};
-use nix::{
-    fcntl::{OFlag, SpliceFFlags},
-    poll::{PollFd, PollFlags, PollTimeout, poll},
-    sys::signal::{SigSet, Signal, raise},
-    sys::signalfd::{SfdFlags, SignalFd},
-    sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr},
-    unistd::pipe2,
-};
+use nix::fcntl::{OFlag, SpliceFFlags};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::signal::{SigSet, Signal, raise};
+use nix::sys::signalfd::{SfdFlags, SignalFd};
+use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
+use nix::unistd::pipe2;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::mem::MaybeUninit;
@@ -101,7 +99,6 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
     let mut signal_fd: Option<SignalFd> = None;
 
     let raw_ptmx = ptmx.as_raw_fd();
-    let mut raw_sig = -1;
 
     let mut poll_fds = Vec::with_capacity(3);
     poll_fds.push(PollFd::new(ptmx.as_fd(), PollFlags::POLLIN));
@@ -113,12 +110,14 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
             .check_os_err("pthread_sigmask", None, None)?;
         let sig = SignalFd::with_flags(&set, SfdFlags::SFD_CLOEXEC)
             .into_os_result("signalfd", None, None)?;
-        raw_sig = sig.as_raw_fd();
         signal_fd = Some(sig);
-        poll_fds.push(PollFd::new(
-            signal_fd.as_ref().unwrap().as_fd(),
-            PollFlags::POLLIN,
-        ));
+        unsafe {
+            // SAFETY: signal_fd is always Some
+            poll_fds.push(PollFd::new(
+                signal_fd.as_ref().unwrap_unchecked().as_fd(),
+                PollFlags::POLLIN,
+            ));
+        }
 
         // We also need to pump stdin to ptmx
         poll_fds.push(PollFd::new(
@@ -143,10 +142,12 @@ fn pump_tty_impl(ptmx: File, pump_stdin: bool) -> LoggedResult<()> {
                 if raw_fd == STDIN_FILENO {
                     pump_via_splice(FileOrStd::StdIn.as_file(), &ptmx, &pipe_fd)?;
                 } else if raw_fd == raw_ptmx {
-                    pump_via_splice(&ptmx, FileOrStd::StdIn.as_file(), &pipe_fd)?;
-                } else if raw_fd == raw_sig {
+                    pump_via_splice(&ptmx, FileOrStd::StdOut.as_file(), &pipe_fd)?;
+                } else if let Some(sig) = &signal_fd
+                    && raw_fd == sig.as_raw_fd()
+                {
                     sync_winsize(raw_ptmx);
-                    signal_fd.as_ref().unwrap().read_signal()?;
+                    sig.read_signal()?;
                 }
             } else if pfd
                 .revents()

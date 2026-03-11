@@ -7,11 +7,12 @@ use crate::socket::IpcRead;
 use base::{LoggedResult, ResultExt, WriteExt, debug, error, exit_on_error, libc, warn};
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::{UCred, UnixStream};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[allow(unused_imports)]
 use std::os::fd::AsRawFd;
+use std::sync::nonpoison::Mutex;
 
 const DEFAULT_SHELL: &str = "/system/bin/sh";
 
@@ -132,7 +133,7 @@ impl MagiskD {
 
         let info = self.get_su_info(cred.uid as i32);
         {
-            let mut access = info.access.lock().unwrap();
+            let mut access = info.access.lock();
 
             // Talk to su manager
             let mut app = SuAppContext {
@@ -203,7 +204,7 @@ impl MagiskD {
         }
 
         let cached = self.cached_su_info.load();
-        if cached.uid == uid && cached.access.lock().unwrap().is_fresh() {
+        if cached.uid == uid && cached.access.lock().is_fresh() {
             return cached;
         }
 
@@ -214,14 +215,14 @@ impl MagiskD {
 
     #[cfg(feature = "su-check-db")]
     fn build_su_info(&self, uid: i32) -> Arc<SuInfo> {
-        let result: LoggedResult<Arc<SuInfo>> = try {
+        let result = || -> LoggedResult<Arc<SuInfo>> {
             let cfg = self.get_db_settings()?;
 
             // Check multiuser settings
             let eval_uid = match cfg.multiuser_mode {
                 MultiuserMode::OwnerOnly => {
                     if to_user_id(uid) != 0 {
-                        return Arc::new(SuInfo::deny(uid));
+                        return Ok(Arc::new(SuInfo::deny(uid)));
                     }
                     uid
                 }
@@ -242,25 +243,25 @@ impl MagiskD {
 
             // If it's the manager, allow it silently
             if to_app_id(uid) == to_app_id(mgr_uid) {
-                return Arc::new(SuInfo::allow(uid));
+                return Ok(Arc::new(SuInfo::allow(uid)));
             }
 
             // Check su access settings
             match cfg.root_access {
                 RootAccess::Disabled => {
                     warn!("Root access is disabled!");
-                    return Arc::new(SuInfo::deny(uid));
+                    return Ok(Arc::new(SuInfo::deny(uid)));
                 }
                 RootAccess::AdbOnly => {
                     if uid != AID_SHELL {
                         warn!("Root access limited to ADB only!");
-                        return Arc::new(SuInfo::deny(uid));
+                        return Ok(Arc::new(SuInfo::deny(uid)));
                     }
                 }
                 RootAccess::AppsOnly => {
                     if uid == AID_SHELL {
                         warn!("Root access is disabled for ADB!");
-                        return Arc::new(SuInfo::deny(uid));
+                        return Ok(Arc::new(SuInfo::deny(uid)));
                     }
                 }
                 _ => {}
@@ -268,19 +269,19 @@ impl MagiskD {
 
             // If still not determined, check if manager exists
             if access.policy == SuPolicy::Query && mgr_uid < 0 {
-                return Arc::new(SuInfo::deny(uid));
+                return Ok(Arc::new(SuInfo::deny(uid)));
             }
 
             // Finally, the SuInfo
-            Arc::new(SuInfo {
+            Ok(Arc::new(SuInfo {
                 uid,
                 eval_uid,
                 mgr_pkg,
                 mgr_uid,
                 cfg,
                 access: Mutex::new(AccessInfo::new(access)),
-            })
-        };
+            }))
+        }();
 
         result.unwrap_or(Arc::new(SuInfo::deny(uid)))
     }

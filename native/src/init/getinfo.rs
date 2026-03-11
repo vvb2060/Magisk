@@ -10,6 +10,10 @@ impl BootConfig {
         debug!("rootwait=[{}]", self.rootwait);
         unsafe {
             debug!(
+                "boot_mode=[{}]",
+                Utf8CStr::from_ptr_unchecked(self.boot_mode.as_ptr())
+            );
+            debug!(
                 "slot=[{}]",
                 Utf8CStr::from_ptr_unchecked(self.slot.as_ptr())
             );
@@ -43,7 +47,7 @@ impl MagiskInit {
             // Use the apex folder to determine whether 2SI (Android 10+)
             cstr!("/apex").exists() ||
             // If we still have no indication, parse the original init and see what's up
-            MappedFile::open(backup_init())
+            MappedFile::open(Some(cstr!("/init.real")).take_if(|p| p.exists()).unwrap_or(backup_init()))
                 .map(|data| data.contains(b"selinux_setup"))
                 .unwrap_or(false)
     }

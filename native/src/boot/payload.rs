@@ -1,15 +1,13 @@
 use crate::compress::get_decoder;
 use crate::ffi::check_fmt;
-use crate::proto::update_metadata::{DeltaArchiveManifest, mod_InstallOperation::Type};
+use crate::proto::update_metadata::DeltaArchiveManifest;
+use crate::proto::update_metadata::mod_InstallOperation::Type;
 use base::{LoggedError, LoggedResult, ReadSeekExt, ResultExt, WriteExt, error};
 use byteorder::{BigEndian, ReadBytesExt};
 use quick_protobuf::{BytesReader, MessageRead};
-use std::io::Cursor;
-use std::{
-    fs::File,
-    io::{BufReader, Read, Seek, SeekFrom, Write},
-    os::fd::FromRawFd,
-};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
+use std::os::fd::FromRawFd;
 
 macro_rules! bad_payload {
     ($msg:literal) => {{
@@ -166,10 +164,11 @@ pub fn extract_boot_from_payload(
                 out_file.seek(SeekFrom::Start(out_offset))?;
                 let fmt = check_fmt(data);
 
-                let mut decoder = get_decoder(fmt, Cursor::new(data));
-                let Ok(_): std::io::Result<()> = (try {
+                let Ok(_) = || -> std::io::Result<()> {
+                    let mut decoder = get_decoder(fmt, Cursor::new(data))?;
                     std::io::copy(decoder.as_mut(), &mut out_file)?;
-                }) else {
+                    Ok(())
+                }() else {
                     return Err(bad_payload!("decompression failed"));
                 };
             }

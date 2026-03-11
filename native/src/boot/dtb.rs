@@ -1,14 +1,11 @@
+use argh::FromArgs;
+use base::{LoggedResult, MappedFile, Utf8CStr, argh};
+use fdt::node::{FdtNode, NodeProperty};
+use fdt::{Fdt, FdtError};
 use std::cell::UnsafeCell;
 
-use argh::FromArgs;
-use fdt::{
-    Fdt, FdtError,
-    node::{FdtNode, NodeProperty},
-};
-
-use base::{LoggedResult, MappedFile, Utf8CStr};
-
-use crate::{check_env, patch::patch_verity};
+use crate::check_env;
+use crate::patch::patch_verity;
 
 #[derive(FromArgs)]
 #[argh(subcommand)]
@@ -21,7 +18,7 @@ pub(crate) enum DtbAction {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "print")]
 pub(crate) struct Print {
-    #[argh(switch, short = 'f')]
+    #[argh(switch, short = 'f', long = none)]
     fstab: bool,
 }
 

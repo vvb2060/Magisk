@@ -1,9 +1,10 @@
 use crate::ffi::SePolicy;
 use crate::statement::format_statement_help;
 use argh::FromArgs;
+use base::libc::umask;
 use base::{
-    CmdArgs, EarlyExitExt, FmtAdaptor, LoggedResult, Utf8CString, cmdline_logging, cstr,
-    libc::umask, log_err,
+    CmdArgs, EarlyExitExt, FmtAdaptor, LoggedResult, Utf8CString, argh, cmdline_logging, cstr,
+    log_err,
 };
 use std::ffi::c_char;
 use std::io::stderr;
@@ -78,12 +79,12 @@ pub unsafe extern "C" fn main(
         umask(0);
     }
 
-    let res: LoggedResult<()> = try {
+    let res = || -> LoggedResult<()> {
         let cmds = CmdArgs::new(argc, argv);
         let cmds = cmds.as_slice();
         if argc < 2 {
             print_usage(cmds.first().unwrap_or(&"magiskpolicy"));
-            return 1;
+            return log_err!();
         }
         let cli = Cli::from_args(&[cmds[0]], &cmds[1..]).on_early_exit(|| print_usage(cmds[0]));
 
@@ -108,7 +109,7 @@ pub unsafe extern "C" fn main(
                 log_err!("Cannot print rules with other options")?;
             }
             sepol.print_rules();
-            return 0;
+            return Ok(());
         }
 
         if cli.magisk {
@@ -132,6 +133,7 @@ pub unsafe extern "C" fn main(
         {
             log_err!("Cannot dump policy to {}", file)?;
         }
-    };
+        Ok(())
+    }();
     if res.is_ok() { 0 } else { 1 }
 }

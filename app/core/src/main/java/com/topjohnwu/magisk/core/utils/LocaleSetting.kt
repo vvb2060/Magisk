@@ -4,9 +4,12 @@ import android.annotation.SuppressLint
 import android.app.LocaleConfig
 import android.app.LocaleManager
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.res.Resources
+import android.net.Uri
 import android.os.Build
 import android.os.LocaleList
+import android.provider.Settings
 import androidx.annotation.RequiresApi
 import com.topjohnwu.magisk.core.AppApkPath
 import com.topjohnwu.magisk.core.AppContext
@@ -30,8 +33,8 @@ interface LocaleSetting {
 
         private val systemLocale: Locale = Locale.getDefault()
 
-        override var currentLocale: Locale = systemLocale
         override var appLocale: Locale? = null
+        override var currentLocale: Locale = systemLocale
 
         init {
             setLocale(Config.locale)
@@ -164,9 +167,18 @@ interface LocaleSetting {
             LocaleConfig.fromContextIgnoringOverride(context)
         }
 
-        val useLocaleManager get() =
-            if (isRunningAsStub) Build.VERSION.SDK_INT >= 34
-            else Build.VERSION.SDK_INT >= 33
+        private val localeManagerUsable get() =
+            if (isRunningAsStub) Build.VERSION.SDK_INT >= 34 else Build.VERSION.SDK_INT >= 33
+
+        val useLocaleManager by lazy {
+            localeManagerUsable &&
+                    localeSettingsIntent.resolveActivity(AppContext.packageManager) != null
+        }
+
+        val localeSettingsIntent get() = Intent(
+            Settings.ACTION_APP_LOCALE_SETTINGS,
+            Uri.fromParts("package", AppContext.packageName, null),
+        )
 
         val instance: LocaleSetting by lazy {
             // Initialize available locale list

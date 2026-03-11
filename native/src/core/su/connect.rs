@@ -8,14 +8,14 @@ use ExtraVal::{Bool, Int, IntList, Str};
 use base::{
     BytesExt, FileAttr, LibcReturn, LoggedResult, ResultExt, Utf8CStrBuf, cstr, fork_dont_care,
 };
-use nix::{
-    fcntl::OFlag,
-    poll::{PollFd, PollFlags, PollTimeout},
-};
+use nix::fcntl::OFlag;
+use nix::poll::{PollFd, PollFlags, PollTimeout};
 use num_traits::AsPrimitive;
+use std::fmt::Write;
+use std::fs::File;
 use std::os::fd::AsFd;
 use std::os::unix::net::UCred;
-use std::{fmt::Write, fs::File, process::Command, process::exit};
+use std::process::{Command, exit};
 
 struct Extra<'a> {
     key: &'static str,
@@ -44,7 +44,9 @@ impl Extra<'_> {
             IntList(list) => {
                 cmd.args(["--es", self.key]);
                 let mut tmp = String::new();
-                list.iter().for_each(|i| write!(&mut tmp, "{i},").unwrap());
+                list.iter().for_each(|i| {
+                    write!(&mut tmp, "{i},").ok();
+                });
                 tmp.pop();
                 cmd.arg(&tmp);
             }
@@ -67,7 +69,9 @@ impl Extra<'_> {
             IntList(list) => {
                 tmp = format!("{}:s:", self.key);
                 if !list.is_empty() {
-                    list.iter().for_each(|i| write!(&mut tmp, "{i},").unwrap());
+                    list.iter().for_each(|i| {
+                        write!(&mut tmp, "{i},").ok();
+                    });
                     tmp.pop();
                 }
             }
@@ -171,7 +175,7 @@ impl SuAppContext<'_> {
         ))
         .ok();
 
-        let fd: LoggedResult<File> = try {
+        let fd = || -> LoggedResult<File> {
             let mut attr = FileAttr::new();
             attr.st.st_mode = 0o600;
             attr.st.st_uid = self.info.mgr_uid.as_();
@@ -202,10 +206,13 @@ impl SuAppContext<'_> {
             let mut pfd = [PollFd::new(fd.as_fd(), PollFlags::POLLIN)];
 
             // Wait for data input for at most 70 seconds
-            nix::poll::poll(&mut pfd, PollTimeout::try_from(70 * 1000).unwrap())
-                .check_os_err("poll", None, None)?;
-            fd
-        };
+            nix::poll::poll(
+                &mut pfd,
+                PollTimeout::try_from(70 * 1000).unwrap_or(PollTimeout::NONE),
+            )
+            .check_os_err("poll", None, None)?;
+            Ok(fd)
+        }();
 
         fifo.remove().log_ok();
 

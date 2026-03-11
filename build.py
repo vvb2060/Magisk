@@ -80,7 +80,7 @@ support_targets = {"magisk", "magiskinit", "magiskboot", "magiskpolicy", "resetp
 default_targets = support_targets - {"resetprop"}
 rust_targets = default_targets.copy()
 clean_targets = {"native", "cpp", "rust", "app"}
-ondk_version = "r29.2"
+ondk_version = "r29.5"
 
 # Global vars
 config = {}
@@ -406,6 +406,7 @@ def build_apk(module: str):
             gradlew,
             f"{module}:assemble{build_type}",
             f"-PconfigPath={props}",
+            f"-PabiList={','.join(build_abis.keys())}",
         ],
         env=env,
     )

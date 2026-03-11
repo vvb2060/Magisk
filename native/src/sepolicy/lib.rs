@@ -1,5 +1,3 @@
-#![feature(try_blocks)]
-
 pub use base;
 use std::fmt::Write;
 
@@ -8,7 +6,7 @@ use crate::ffi::SePolicy;
 #[path = "../include/consts.rs"]
 mod consts;
 
-#[cfg(feature = "main")]
+#[cfg(not(feature = "no-main"))]
 mod cli;
 mod rules;
 mod statement;

@@ -49,7 +49,7 @@ macro_rules! bad_apk {
  * within the APK v2 signature block.
  */
 fn read_certificate(apk: &mut File, version: i32) -> Vec<u8> {
-    let res: io::Result<Vec<u8>> = try {
+    let res = || -> io::Result<Vec<u8>> {
         let mut u32_val = 0u32;
         let mut u64_val = 0u64;
 
@@ -137,7 +137,7 @@ fn read_certificate(apk: &mut File, version: i32) -> Vec<u8> {
 
                 let mut cert = vec![0; u32_val as usize];
                 apk.read_exact(cert.as_mut())?;
-                break cert;
+                break Ok(cert);
             } else {
                 // Skip this id-value pair
                 apk.seek(SeekFrom::Current(
@@ -145,7 +145,7 @@ fn read_certificate(apk: &mut File, version: i32) -> Vec<u8> {
                 ))?;
             }
         }
-    };
+    }();
     res.log().unwrap_or(vec![])
 }
 
@@ -315,7 +315,7 @@ impl ManagerInfo {
         if let Some(ref mut stub_fd) = self.stub_apk_fd {
             // Copy the stub APK
             let tmp_apk = cstr!("/data/stub.apk");
-            let result: LoggedResult<()> = try {
+            let result = || -> LoggedResult<()> {
                 {
                     let mut tmp_apk_file = tmp_apk.create(
                         OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_CLOEXEC,
@@ -325,7 +325,8 @@ impl ManagerInfo {
                 }
                 // Seek the fd back to start
                 stub_fd.seek(SeekFrom::Start(0))?;
-            };
+                Ok(())
+            }();
             if result.is_ok() {
                 install_apk(tmp_apk);
             }
@@ -441,7 +442,7 @@ impl MagiskD {
     }
 
     pub fn preserve_stub_apk(&self) {
-        let mut info = self.manager_info.lock().unwrap();
+        let mut info = self.manager_info.lock();
 
         let apk = cstr::buf::default()
             .join_path(get_magisk_tmp())
@@ -458,19 +459,19 @@ impl MagiskD {
     }
 
     pub fn get_manager_uid(&self, user: i32) -> i32 {
-        let mut info = self.manager_info.lock().unwrap();
+        let mut info = self.manager_info.lock();
         let (uid, _) = info.get_manager(self, user, false);
         uid
     }
 
     pub fn get_manager(&self, user: i32, install: bool) -> (i32, String) {
-        let mut info = self.manager_info.lock().unwrap();
+        let mut info = self.manager_info.lock();
         let (uid, pkg) = info.get_manager(self, user, install);
         (uid, pkg.to_string())
     }
 
     pub fn ensure_manager(&self) {
-        let mut info = self.manager_info.lock().unwrap();
+        let mut info = self.manager_info.lock();
         let _ = info.get_manager(self, 0, true);
     }
 
@@ -478,7 +479,7 @@ impl MagiskD {
     // app_no range: [0, 9999]
     pub fn get_app_no_list(&self) -> BitSet {
         let mut list = BitSet::new();
-        let _: LoggedResult<()> = try {
+        let _ = || -> LoggedResult<()> {
             let mut app_data_dir = Directory::open(self.app_data_dir())?;
             // For each user
             loop {
@@ -507,7 +508,8 @@ impl MagiskD {
                     }
                 }
             }
-        };
+            Ok(())
+        }();
         list
     }
 }

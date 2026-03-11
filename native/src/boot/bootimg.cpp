@@ -53,6 +53,19 @@ static bool check_env(const char *name) {
     return val != nullptr && val == "true"sv;
 }
 
+static bool guess_lzma(const uint8_t *buf, size_t len) {
+    // 0     : (pb * 5 + lp) * 9 + lc
+    // 1 - 4 : dict size, must be 2^n
+    // 5 - 12: all 0xFF
+    if (len <= 13) return false;
+    if (memcmp(buf, "\x5d", 1) != 0) return false;
+    uint32_t dict_sz = 0;
+    memcpy(&dict_sz, buf + 1, sizeof(dict_sz));
+    if (dict_sz == 0 || (dict_sz & (dict_sz - 1)) != 0) return false;
+    if (memcmp(buf + 5, "\xff\xff\xff\xff\xff\xff\xff\xff", 8) != 0) return false;
+    return true;
+}
+
 FileFormat check_fmt(const void *buf, size_t len) {
     if (CHECKED_MATCH(CHROMEOS_MAGIC)) {
         return FileFormat::CHROMEOS;
@@ -66,8 +79,7 @@ FileFormat check_fmt(const void *buf, size_t len) {
         return FileFormat::LZOP;
     } else if (CHECKED_MATCH(XZ_MAGIC)) {
         return FileFormat::XZ;
-    } else if (len >= 13 && memcmp(buf, "\x5d\x00\x00", 3) == 0
-            && (((char *)buf)[12] == '\xff' || ((char *)buf)[12] == '\x00')) {
+    } else if (guess_lzma(static_cast<const uint8_t *>(buf), len)) {
         return FileFormat::LZMA;
     } else if (CHECKED_MATCH(BZIP_MAGIC)) {
         return FileFormat::BZIP2;
@@ -279,9 +291,10 @@ static int find_dtb_offset(const uint8_t *buf, unsigned sz) {
 
         auto fdt_hdr = reinterpret_cast<const fdt_header *>(curr);
 
-        // Check that fdt_header.totalsize does not overflow kernel image size
+        // Check that fdt_header.totalsize does not overflow kernel image size or is empty dtb
+        // https://github.com/torvalds/linux/commit/7b937cc243e5b1df8780a0aa743ce800df6c68d1
         uint32_t totalsize = fdt_hdr->totalsize;
-        if (totalsize > end - curr)
+        if (totalsize > end - curr || totalsize <= 0x48)
             continue;
 
         // Check that fdt_header.off_dt_struct does not overflow kernel image size
@@ -598,7 +611,9 @@ bool boot_img::parse_image(const uint8_t *addr, FileFormat type) {
 int split_image_dtb(Utf8CStr filename, bool skip_decomp) {
     mmap_data img(filename.c_str());
 
-    if (size_t off = find_dtb_offset(img.data(), img.size()); off > 0) {
+    if (int offset = find_dtb_offset(img.data(), img.size()); offset > 0) {
+        size_t off = (size_t) offset;
+
         FileFormat fmt = check_fmt_lg(img.data(), img.size());
         if (!skip_decomp && fmt_compressed(fmt)) {
             int fd = creat(KERNEL_FILE, 0644);
@@ -900,8 +915,6 @@ void repack(Utf8CStr src_img, Utf8CStr out_img, bool skip_comp) {
         file_align();
     }
 
-    off.tail = lseek(fd, 0, SEEK_CUR);
-
     // Proprietary stuffs
     if (boot.flags[SEANDROID_FLAG]) {
         xwrite(fd, SEANDROID_MAGIC, 16);
@@ -912,6 +925,7 @@ void repack(Utf8CStr src_img, Utf8CStr out_img, bool skip_comp) {
         xwrite(fd, LG_BUMP_MAGIC, 16);
     }
 
+    off.tail = lseek(fd, 0, SEEK_CUR);
     file_align();
 
     // vbmeta

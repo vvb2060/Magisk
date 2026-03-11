@@ -87,25 +87,23 @@ impl ZygiskState {
             }
         }
 
-        let socket = if let Some(fd) = socket {
-            fd
+        if let Some(fd) = socket {
+            fd.send_fds(&[client.as_raw_fd()])?;
         } else {
             // Create a new socket pair and fork zygiskd process
-            let (local, remote) = UnixStream::pair()?;
+            let (mut local, remote) = UnixStream::pair()?;
             if fork_dont_care() == 0 {
                 exec_zygiskd(is_64_bit, remote);
             }
-            *socket = Some(local);
-            let local = socket.as_mut().unwrap();
             if let Some(module_fds) = daemon.get_module_fds(is_64_bit) {
                 local.send_fds(&module_fds)?;
             }
             if local.read_decodable::<i32>()? != 0 {
                 return log_err!();
             }
-            local
-        };
-        socket.send_fds(&[client.as_raw_fd()])?;
+            local.send_fds(&[client.as_raw_fd()])?;
+            *socket = Some(local);
+        }
         Ok(())
     }
 
@@ -159,7 +157,7 @@ impl ZygiskState {
 
 impl MagiskD {
     pub fn zygisk_handler(&self, mut client: UnixStream) {
-        let _: LoggedResult<()> = try {
+        let _ = || -> LoggedResult<()> {
             let code = ZygiskRequest {
                 repr: client.read_decodable()?,
             };
@@ -168,13 +166,13 @@ impl MagiskD {
                 ZygiskRequest::ConnectCompanion => self
                     .zygisk
                     .lock()
-                    .unwrap()
                     .connect_zygiskd(client, self)
                     .log_with_msg(|w| w.write_str("zygiskd startup error"))?,
                 ZygiskRequest::GetModDir => self.get_mod_dir(client)?,
                 _ => {}
             }
-        };
+            Ok(())
+        }();
     }
 
     fn get_module_fds(&self, is_64_bit: bool) -> Option<Vec<RawFd>> {
@@ -222,9 +220,12 @@ impl MagiskD {
         let failed_ids: Vec<i32> = client.read_decodable()?;
         if let Some(module_list) = self.module_list.get() {
             for id in failed_ids {
+                let Some(module) = module_list.get(id as usize) else {
+                    continue;
+                };
                 let path = cstr::buf::default()
                     .join_path(MODULEROOT)
-                    .join_path(&module_list[id as usize].name)
+                    .join_path(&module.name)
                     .join_path("zygisk");
                 // Create the unloaded marker file
                 if let Ok(dir) = Directory::open(&path) {
@@ -240,7 +241,13 @@ impl MagiskD {
 
     fn get_mod_dir(&self, mut client: UnixStream) -> LoggedResult<()> {
         let id: i32 = client.read_decodable()?;
-        let module = &self.module_list.get().unwrap()[id as usize];
+        let Some(module) = self
+            .module_list
+            .get()
+            .and_then(|list| list.get(id as usize))
+        else {
+            return Ok(());
+        };
         let dir = cstr::buf::default()
             .join_path(MODULEROOT)
             .join_path(&module.name);

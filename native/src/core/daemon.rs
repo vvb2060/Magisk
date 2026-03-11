@@ -21,20 +21,19 @@ use base::{
     AtomicArc, BufReadExt, FileAttr, FsPathBuilder, LoggedResult, ReadExt, ResultExt, Utf8CStr,
     Utf8CStrBuf, WriteExt, cstr, fork_dont_care, info, libc, log_err, set_nice_name,
 };
-use nix::{
-    fcntl::OFlag,
-    mount::MsFlags,
-    sys::signal::SigSet,
-    unistd::{dup2_stderr, dup2_stdin, dup2_stdout, getpid, getuid, setsid},
-};
+use nix::fcntl::OFlag;
+use nix::mount::MsFlags;
+use nix::sys::signal::SigSet;
+use nix::unistd::{dup2_stderr, dup2_stdin, dup2_stdout, getpid, getuid, setsid};
 use num_traits::AsPrimitive;
 use std::fmt::Write as _;
 use std::io::{BufReader, Write};
 use std::os::fd::{AsFd, AsRawFd, IntoRawFd, RawFd};
 use std::os::unix::net::{UCred, UnixListener, UnixStream};
 use std::process::{Command, exit};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::nonpoison::Mutex;
 use std::time::Duration;
 
 // Global magiskd singleton
@@ -107,7 +106,7 @@ impl MagiskD {
                 denylist_handler(-1);
 
                 // Restore native bridge property
-                self.zygisk.lock().unwrap().restore_prop();
+                self.zygisk.lock().restore_prop();
 
                 client.write_pod(&0).log_ok();
 
@@ -131,7 +130,7 @@ impl MagiskD {
                 self.prune_su_access();
                 scan_deny_apps();
                 if self.zygisk_enabled.load(Ordering::Relaxed) {
-                    self.zygisk.lock().unwrap().reset(false);
+                    self.zygisk.lock().reset(false);
                 }
             }
             RequestCode::SQLITE_CMD => {

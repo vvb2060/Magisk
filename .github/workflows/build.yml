@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
@@ -39,14 +39,14 @@ jobs:
         run: ./app/gradlew --stop
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ github.sha }}
           path: out
           compression-level: 9
 
       - name: Upload mapping and native debug symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ github.sha }}-symbols
           path: app/apk/build/outputs
@@ -61,7 +61,7 @@ jobs:
         os: [windows-2025, ubuntu-24.04]
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "recursive"
 
@@ -82,27 +82,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, "CANARY"]
+        version: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 36.1, "CANARY"]
         type: [""]
         include:
-          - version: "CANARY"
+          - version: "CinnamonBun"
             type: "google_apis_ps16k"
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ github.sha }}
           path: out
 
       - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+        run: .github/kvm.sh
 
       - name: Run AVD test
         timeout-minutes: 15
@@ -112,7 +109,7 @@ jobs:
 
       - name: Upload logs on error
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: "avd-logs-${{ matrix.version }}"
           path: |
@@ -131,19 +128,16 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ github.sha }}
           path: out
 
       - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+        run: .github/kvm.sh
 
       - name: Run AVD test
         timeout-minutes: 15
@@ -154,7 +148,7 @@ jobs:
 
       - name: Upload logs on error
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: "avd32-logs-${{ matrix.version }}"
           path: |
@@ -177,13 +171,16 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: ${{ github.sha }}
           path: out
+
+      - name: Enable KVM group perms
+        run: .github/kvm.sh
 
       - name: Setup Cuttlefish environment
         run: |
@@ -196,7 +193,7 @@ jobs:
 
       - name: Upload logs on error
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: "cvd-logs-${{ matrix.device }}"
           path: |

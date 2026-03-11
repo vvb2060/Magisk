@@ -1,19 +1,11 @@
-use crate::ffi::backup_init;
+use crate::ffi::{BootConfig, MagiskInit, backup_init, magisk_proxy_main};
+use crate::logging::setup_klog;
 use crate::mount::is_rootfs;
 use crate::twostage::hexpatch_init_for_second_stage;
-use crate::{
-    ffi::{BootConfig, MagiskInit, magisk_proxy_main},
-    logging::setup_klog,
-};
-use base::{
-    LibcReturn, LoggedResult, ResultExt, cstr, info,
-    libc::{basename, getpid, mount, umask},
-    raw_cstr,
-};
-use std::{
-    ffi::{CStr, c_char},
-    ptr::null,
-};
+use base::libc::{basename, getpid, mount, umask};
+use base::{LibcReturn, LoggedResult, ResultExt, cstr, info, raw_cstr};
+use std::ffi::{CStr, c_char};
+use std::ptr::null;
 
 impl MagiskInit {
     fn new(argv: *mut *mut c_char) -> Self {
@@ -32,6 +24,7 @@ impl MagiskInit {
                 fstab_suffix: [0; 32],
                 hardware: [0; 32],
                 hardware_plat: [0; 32],
+                boot_mode: [0; 16],
                 partition_map: Vec::new(),
             },
         }
@@ -95,8 +88,8 @@ impl MagiskInit {
         self.patch_rw_root();
     }
 
-    fn recovery(&self) {
-        info!("Ramdisk is recovery, abort");
+    fn recovery_or_charger(&self) {
+        info!("Charger mode or ramdisk is recovery, abort");
         self.restore_ramdisk_init();
         cstr!("/.backup").remove_all().ok();
     }
@@ -159,8 +152,11 @@ impl MagiskInit {
             self.legacy_system_as_root();
         } else if self.config.force_normal_boot {
             self.first_stage();
-        } else if cstr!("/sbin/recovery").exists() || cstr!("/system/bin/recovery").exists() {
-            self.recovery();
+        } else if cstr!("/sbin/recovery").exists()
+            || cstr!("/system/bin/recovery").exists()
+            || unsafe { CStr::from_ptr(self.config.boot_mode.as_ptr()) } == c"charger"
+        {
+            self.recovery_or_charger();
         } else if self.check_two_stage() {
             self.first_stage();
         } else {

@@ -1,16 +1,17 @@
-#![feature(try_blocks)]
-#![feature(let_chains)]
 #![feature(fn_traits)]
 #![feature(unix_socket_ancillary_data)]
 #![feature(unix_socket_peek)]
 #![feature(default_field_values)]
 #![feature(peer_credentials_unix_socket)]
+#![feature(sync_nonpoison)]
+#![feature(nonpoison_mutex)]
+#![feature(nonpoison_condvar)]
 #![allow(clippy::missing_safety_doc)]
 
 use crate::ffi::SuRequest;
 use crate::socket::Encodable;
+use base::derive::Decodable;
 use daemon::{MagiskD, connect_daemon_for_cxx};
-use derive::Decodable;
 use logging::{android_logging, zygisk_close_logd, zygisk_get_logd, zygisk_logging};
 use magisk::magisk_main;
 use mount::revert_unmount;

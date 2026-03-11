@@ -5,13 +5,17 @@ use base::{
     FsPathBuilder, LibcReturn, LoggedResult, MountInfo, ResultExt, Utf8CStr, Utf8CStrBuf, cstr,
     debug, info, libc, parse_mount_info, warn,
 };
-use libc::{c_uint, dev_t};
-use nix::{
-    mount::MsFlags,
-    sys::stat::{Mode, SFlag, mknod},
-};
+use libc::{c_uint, dev_t, major};
+use nix::mount::MsFlags;
+use nix::sys::stat::{Mode, SFlag, mknod};
 use num_traits::AsPrimitive;
-use std::{cmp::Ordering::Greater, cmp::Ordering::Less, path::Path, path::PathBuf};
+use std::cmp::Ordering::{Greater, Less};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+// Linux allocated devices: 240-254 are reserved for LOCAL/EXPERIMENTAL use.
+const DYNAMIC_MAJOR_MIN: u32 = 240;
+const DYNAMIC_MAJOR_MAX: u32 = 254;
 
 pub fn setup_preinit_dir() {
     let magisk_tmp = get_magisk_tmp();
@@ -42,12 +46,13 @@ pub fn setup_preinit_dir() {
                 let target = Utf8CStr::from_string(&mut target);
                 let mut preinit_dir = resolve_preinit_dir(target);
                 let preinit_dir = Utf8CStr::from_string(&mut preinit_dir);
-                let r: LoggedResult<()> = try {
+                let r = || -> LoggedResult<()> {
                     preinit_dir.mkdir(0o700)?;
                     mnt_path.mkdirs(0o755)?;
                     mnt_path.remove().ok();
                     mnt_path.create_symlink_to(preinit_dir)?;
-                };
+                    Ok(())
+                }();
                 if r.is_ok() {
                     info!("* Found preinit dir: {}", preinit_dir);
                     return;
@@ -64,11 +69,12 @@ pub fn setup_module_mount() {
     let module_mnt = cstr::buf::default()
         .join_path(get_magisk_tmp())
         .join_path(MODULEMNT);
-    let _: LoggedResult<()> = try {
+    let _ = || -> LoggedResult<()> {
         module_mnt.mkdir(0o755)?;
         cstr!(MODULEROOT).bind_mount_to(&module_mnt, false)?;
         module_mnt.remount_mount_point_flags(MsFlags::MS_RDONLY)?;
-    };
+        Ok(())
+    }();
 }
 
 pub fn clean_mounts() {
@@ -81,21 +87,24 @@ pub fn clean_mounts() {
     buf.clear();
 
     let worker_dir = buf.append_path(magisk_tmp).append_path(WORKERDIR);
-    let _: LoggedResult<()> = try {
+    let _ = || -> LoggedResult<()> {
         worker_dir.set_mount_private(true)?;
         worker_dir.unmount()?;
-    };
+        Ok(())
+    }();
 }
 
 // when partitions have the same fs type, the order is:
 // - data: it has sufficient space and can be safely written
 // - cache: size is limited, but still can be safely written
+// - klogdump: available on some Smartisan devices and can be safely written
 // - metadata: size is limited, and it might cause unexpected behavior if written
 // - persist: it's the last resort, as it's dangerous to write to it
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum PartId {
     Data,
     Cache,
+    Klogdump,
     Metadata,
     Persist,
 }
@@ -138,11 +147,20 @@ pub fn find_preinit_device() -> String {
             } else {
                 return None;
             }
+            // use device major number to filter out device-mapper
+            let maj = major(info.device as dev_t) as u32;
+            if (DYNAMIC_MAJOR_MIN..=DYNAMIC_MAJOR_MAX).contains(&maj)
+                && !info.source.contains("/vd")
+                && !info.source.contains("/by-name/")
+            {
+                return None;
+            }
             // take data iff it's not encrypted or file-based encrypted without metadata
             // other partitions are always taken
             match info.target.as_str() {
                 "/persist" | "/mnt/vendor/persist" => Some((PartId::Persist, info)),
                 "/metadata" => Some((PartId::Metadata, info)),
+                "/klogdump" => Some((PartId::Klogdump, info)),
                 "/cache" => Some((PartId::Cache, info)),
                 "/data" => Some((PartId::Data, info))
                     .take_if(|_| matches!(encrypt_type, EncryptType::None | EncryptType::File)),
@@ -182,13 +200,14 @@ pub fn find_preinit_device() -> String {
         let mut buf = cstr::buf::default();
         let mirror_dir = buf.append_path(&tmp).append_path(PREINITMIRR);
         let preinit_dir = Utf8CStr::from_string(&mut preinit_dir);
-        let _: LoggedResult<()> = try {
+        let _ = || -> LoggedResult<()> {
             preinit_dir.mkdirs(0o700)?;
             mirror_dir.mkdirs(0o755)?;
             mirror_dir.unmount().ok();
             mirror_dir.remove().ok();
             mirror_dir.create_symlink_to(preinit_dir)?;
-        };
+            Ok(())
+        }();
         if std::env::var_os("MAKEDEV").is_some() {
             buf.clear();
             let dev_path = buf.append_path(&tmp).append_path(PREINITDEV);
@@ -204,9 +223,8 @@ pub fn find_preinit_device() -> String {
     }
     Path::new(&info.source)
         .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
         .to_string()
 }
 

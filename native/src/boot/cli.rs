@@ -6,9 +6,11 @@ use crate::patch::hexpatch;
 use crate::payload::extract_boot_from_payload;
 use crate::sign::{sha1_hash, sign_boot_image};
 use argh::{CommandInfo, EarlyExit, FromArgs, SubCommand};
+use base::libc::umask;
+use base::nix::fcntl::OFlag;
 use base::{
     CmdArgs, EarlyExitExt, LoggedResult, MappedFile, PositionalArgParser, ResultExt, Utf8CStr,
-    Utf8CString, WriteExt, cmdline_logging, cstr, libc::umask, log_err, nix::fcntl::OFlag,
+    Utf8CString, WriteExt, argh, cmdline_logging, cstr, log_err,
 };
 use std::ffi::c_char;
 use std::io::{Seek, SeekFrom, Write};
@@ -41,9 +43,9 @@ enum Action {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "unpack")]
 struct Unpack {
-    #[argh(switch, short = 'n')]
+    #[argh(switch, short = 'n', long = none)]
     no_decompress: bool,
-    #[argh(switch, short = 'h')]
+    #[argh(switch, short = 'h', long = none)]
     dump_header: bool,
     #[argh(positional)]
     img: Utf8CString,
@@ -52,12 +54,12 @@ struct Unpack {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "repack")]
 struct Repack {
-    #[argh(switch, short = 'n')]
+    #[argh(switch, short = 'n', long = none)]
     no_compress: bool,
     #[argh(positional)]
     img: Utf8CString,
-    #[argh(positional, default = r#"Utf8CString::from("new-boot.img")"#)]
-    out: Utf8CString,
+    #[argh(positional)]
+    out: Option<Utf8CString>,
 }
 
 #[derive(FromArgs)]
@@ -75,31 +77,22 @@ struct Sign {
     #[argh(positional)]
     img: Utf8CString,
     #[argh(positional)]
-    args: Vec<Utf8CString>,
+    name: Option<Utf8CString>,
+    #[argh(positional)]
+    cert: Option<Utf8CString>,
+    #[argh(positional)]
+    key: Option<Utf8CString>,
 }
 
+#[derive(FromArgs)]
+#[argh(subcommand, name = "extract")]
 struct Extract {
+    #[argh(positional)]
     payload: Utf8CString,
+    #[argh(positional)]
     partition: Option<Utf8CString>,
+    #[argh(positional)]
     outfile: Option<Utf8CString>,
-}
-
-impl FromArgs for Extract {
-    fn from_args(_command_name: &[&str], args: &[&str]) -> Result<Self, EarlyExit> {
-        let mut parse = PositionalArgParser(args.iter());
-        Ok(Extract {
-            payload: parse.required("payload.bin")?,
-            partition: parse.optional(),
-            outfile: parse.last_optional()?,
-        })
-    }
-}
-
-impl SubCommand for Extract {
-    const COMMAND: &'static CommandInfo = &CommandInfo {
-        name: "extract",
-        description: "",
-    };
 }
 
 #[derive(FromArgs)]
@@ -134,7 +127,7 @@ struct Dtb {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "split")]
 struct Split {
-    #[argh(switch, short = 'n')]
+    #[argh(switch, short = 'n', long = none)]
     no_decompress: bool,
     #[argh(positional)]
     file: Utf8CString,
@@ -184,26 +177,13 @@ impl SubCommand for Compress {
     };
 }
 
+#[derive(FromArgs)]
+#[argh(subcommand, name = "decompress")]
 struct Decompress {
+    #[argh(positional)]
     file: Utf8CString,
+    #[argh(positional)]
     out: Option<Utf8CString>,
-}
-
-impl FromArgs for Decompress {
-    fn from_args(_command_name: &[&str], args: &[&str]) -> Result<Self, EarlyExit> {
-        let mut iter = PositionalArgParser(args.iter());
-        Ok(Decompress {
-            file: iter.required("infile")?,
-            out: iter.last_optional()?,
-        })
-    }
-}
-
-impl SubCommand for Decompress {
-    const COMMAND: &'static CommandInfo = &CommandInfo {
-        name: "decompress",
-        description: "",
-    };
 }
 
 fn print_usage(cmd: &str) {
@@ -225,7 +205,7 @@ Supported actions:
     dumped to the file 'header', which can be used to modify header
     configurations during repacking.
     Return values:
-    0:valid    1:error    2:chromeos
+    0:valid    1:error    2:chromeos    3:vendor_boot
 
   repack [-n] <origbootimg> [outbootimg]
     Repack boot image components using files from the current directory
@@ -384,21 +364,24 @@ fn boot_main(cmds: CmdArgs) -> LoggedResult<i32> {
             img,
             out,
         }) => {
-            repack(&img, &out, no_compress);
+            repack(
+                &img,
+                out.as_deref().unwrap_or(cstr!("new-boot.img")),
+                no_compress,
+            );
         }
         Action::Verify(Verify { img, cert }) => {
             if !verify_cmd(&img, cert.as_deref()) {
                 return log_err!();
             }
         }
-        Action::Sign(Sign { img, args }) => {
-            let mut iter = args.iter();
-            sign_cmd(
-                &img,
-                iter.next().map(AsRef::as_ref),
-                iter.next().map(AsRef::as_ref),
-                iter.next().map(AsRef::as_ref),
-            )?;
+        Action::Sign(Sign {
+            img,
+            name,
+            cert,
+            key,
+        }) => {
+            sign_cmd(&img, name.as_deref(), cert.as_deref(), key.as_deref())?;
         }
         Action::Extract(Extract {
             payload,

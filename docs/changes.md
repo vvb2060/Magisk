@@ -1,5 +1,24 @@
 # Magisk Changelog
 
+### v30.7 (2026.2.23)
+
+- [MagiskInit] Support Android 16 QPR2 sepolicy format
+- [MagiskInit] Support using klogdump partition as pre-init storage
+- [Zygisk] Support Android 16 QPR2 and higher
+- [Zygisk] Support Android XR and some Nubia devices
+- [MagiskSU] Do not drop capabilities by default, even when switching to non-root UIDs. Explicitly use the `--drop-cap` argument to drop capabilities.
+- [MagiskBoot] Better lzma format detection
+- [MagiskBoot] Fix various commandline argument parsing bugs
+
+### v30.6 (2025.12.1)
+
+- [MagiskInit] Revert a change that could result in bootloops
+
+### v30.5 (2025.12.1)
+
+- [General] Improve commandline argument parsing logic
+- [resetprop] Properly support Android versions with property overrides
+
 ### v30.4 (2025.10.2)
 
 - [MagiskSU] Fix several implementation bugs

@@ -1,16 +1,13 @@
+use super::argh::{EarlyExit, MissingRequirements};
 use crate::{Utf8CStr, Utf8CString, cstr, ffi};
-use argh::{EarlyExit, MissingRequirements};
 use libc::c_char;
-use std::{
-    fmt,
-    fmt::Arguments,
-    io::Write,
-    mem::ManuallyDrop,
-    process::exit,
-    slice, str,
-    sync::Arc,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use std::fmt::Arguments;
+use std::io::Write;
+use std::mem::ManuallyDrop;
+use std::process::exit;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::{fmt, slice, str};
 
 pub fn errno() -> &'static mut i32 {
     unsafe { &mut *libc::__errno() }
@@ -87,17 +84,16 @@ impl<T> EarlyExitExt<T> for Result<T, EarlyExit> {
     fn on_early_exit<F: FnOnce()>(self, print_help_msg: F) -> T {
         match self {
             Ok(t) => t,
-            Err(EarlyExit { output, status }) => match status {
-                Ok(_) => {
+            Err(EarlyExit { output, is_help }) => {
+                if is_help {
                     print_help_msg();
                     exit(0)
-                }
-                Err(_) => {
+                } else {
                     eprintln!("{output}");
                     print_help_msg();
                     exit(1)
                 }
-            },
+            }
         }
     }
 }
@@ -136,13 +132,9 @@ impl PositionalArgParser<'_> {
     }
 
     fn ensure_end(&mut self) -> Result<(), EarlyExit> {
-        if self.0.len() == 0 {
-            Ok(())
-        } else {
-            Err(EarlyExit::from(format!(
-                "Unrecognized argument: {}\n",
-                self.0.next().unwrap()
-            )))
+        match self.0.next() {
+            None => Ok(()),
+            Some(s) => Err(EarlyExit::from(format!("Unrecognized argument: {s}\n"))),
         }
     }
 }
